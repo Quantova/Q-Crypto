@@ -958,3 +958,128 @@ pub fn verify(pk: &PublicKey, message: &[u8], signature: &Signature, context: &[
     };
     verify_internal(pk, &m_prime, signature)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use std::path::PathBuf;
+
+    fn hex(s: &str) -> Vec<u8> {
+        if s == "-" {
+            return Vec::new();
+        }
+        assert!(s.len() % 2 == 0);
+        (0..s.len() / 2)
+            .map(|i| u8::from_str_radix(&s[2 * i..2 * i + 2], 16).unwrap())
+            .collect()
+    }
+
+    fn as_array<const M: usize>(v: &[u8]) -> [u8; M] {
+        let mut a = [0u8; M];
+        a.copy_from_slice(v);
+        a
+    }
+
+    fn seed32(v: &[u8]) -> [u8; 32] {
+        as_array::<32>(v)
+    }
+
+    fn load(name: &str) -> String {
+        let mut path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        path.push("vectors/ml-dsa");
+        path.push(name);
+        fs::read_to_string(path).unwrap()
+    }
+
+    fn records(name: &str) -> Vec<Vec<String>> {
+        load(name)
+            .lines()
+            .filter(|l| !l.is_empty() && !l.starts_with('#'))
+            .map(|l| l.split_whitespace().map(|s| s.to_string()).collect())
+            .collect()
+    }
+
+    #[test]
+    fn keygen_matches_official_vectors() {
+        let recs = records("keygen_65.txt");
+        assert!(!recs.is_empty());
+        for r in &recs {
+            let seed = seed32(&hex(&r[0]));
+            let want_pk = hex(&r[1]);
+            let want_sk = hex(&r[2]);
+            let (pk, sk) = keygen(&seed);
+            assert_eq!(&pk[..], &want_pk[..], "public key mismatch");
+            assert_eq!(&sk[..], &want_sk[..], "secret key mismatch");
+        }
+    }
+
+    #[test]
+    fn sign_internal_matches_official_vectors() {
+        let recs = records("siggen_internal_65.txt");
+        assert!(!recs.is_empty());
+        for r in &recs {
+            let message = hex(&r[0]);
+            let rnd = seed32(&hex(&r[1]));
+            let sk = as_array::<SECRET_KEY_BYTES>(&hex(&r[2]));
+            let want_sig = hex(&r[3]);
+            let sig = sign_internal(&sk, &message, &rnd);
+            assert_eq!(&sig[..], &want_sig[..], "signature mismatch");
+        }
+    }
+
+    #[test]
+    fn sign_external_matches_official_vectors() {
+        let recs = records("siggen_external_65.txt");
+        assert!(!recs.is_empty());
+        for r in &recs {
+            let message = hex(&r[0]);
+            let context = hex(&r[1]);
+            let rnd = seed32(&hex(&r[2]));
+            let sk = as_array::<SECRET_KEY_BYTES>(&hex(&r[3]));
+            let want_sig = hex(&r[4]);
+            let sig = sign(&sk, &message, &context, &rnd).unwrap();
+            assert_eq!(&sig[..], &want_sig[..], "signature mismatch");
+        }
+    }
+
+    #[test]
+    fn verify_external_matches_official_vectors() {
+        let recs = records("sigver_external_65.txt");
+        assert!(!recs.is_empty());
+        for r in &recs {
+            let expected = r[0] == "1";
+            let pk = as_array::<PUBLIC_KEY_BYTES>(&hex(&r[1]));
+            let message = hex(&r[2]);
+            let context = hex(&r[3]);
+            let sig = as_array::<SIGNATURE_BYTES>(&hex(&r[4]));
+            assert_eq!(verify(&pk, &message, &sig, &context), expected);
+        }
+    }
+
+    #[test]
+    fn verify_internal_matches_official_vectors() {
+        let recs = records("sigver_internal_65.txt");
+        assert!(!recs.is_empty());
+        for r in &recs {
+            let expected = r[0] == "1";
+            let pk = as_array::<PUBLIC_KEY_BYTES>(&hex(&r[1]));
+            let message = hex(&r[2]);
+            let sig = as_array::<SIGNATURE_BYTES>(&hex(&r[3]));
+            assert_eq!(verify_internal(&pk, &message, &sig), expected);
+        }
+    }
+
+    #[test]
+    fn sign_then_verify_round_trip() {
+        let seed = [7u8; 32];
+        let (pk, sk) = keygen(&seed);
+        let message = b"quantova ml-dsa round trip";
+        let context = b"ctx";
+        let rnd = [0u8; 32];
+        let sig = sign(&sk, message, context, &rnd).unwrap();
+        assert!(verify(&pk, message, &sig, context));
+        assert!(!verify(&pk, b"other message", &sig, context));
+        assert!(!verify(&pk, message, &sig, b"other ctx"));
+    }
+}
