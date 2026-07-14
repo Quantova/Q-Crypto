@@ -590,3 +590,135 @@ pub fn verify(pk: &[u8; PUBLIC_KEY_BYTES], message: &[u8], sig: &[u8], context: 
         None => false,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use std::path::PathBuf;
+
+    fn hex(s: &str) -> Vec<u8> {
+        if s == "-" {
+            return Vec::new();
+        }
+        assert!(s.len() % 2 == 0);
+        (0..s.len() / 2)
+            .map(|i| u8::from_str_radix(&s[2 * i..2 * i + 2], 16).unwrap())
+            .collect()
+    }
+
+    fn seed(v: &[u8]) -> [u8; N] {
+        let mut a = [0u8; N];
+        a.copy_from_slice(v);
+        a
+    }
+
+    fn secret(v: &[u8]) -> [u8; SECRET_KEY_BYTES] {
+        let mut a = [0u8; SECRET_KEY_BYTES];
+        a.copy_from_slice(v);
+        a
+    }
+
+    fn public(v: &[u8]) -> [u8; PUBLIC_KEY_BYTES] {
+        let mut a = [0u8; PUBLIC_KEY_BYTES];
+        a.copy_from_slice(v);
+        a
+    }
+
+    fn records(name: &str) -> Vec<Vec<String>> {
+        let mut path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        path.push("vectors/slh-dsa");
+        path.push(name);
+        fs::read_to_string(path)
+            .unwrap()
+            .lines()
+            .filter(|l| !l.is_empty() && !l.starts_with('#'))
+            .map(|l| l.split_whitespace().map(|s| s.to_string()).collect())
+            .collect()
+    }
+
+    #[test]
+    fn keygen_matches_official_vectors() {
+        let recs = records("keygen_192s.txt");
+        assert!(!recs.is_empty());
+        for r in &recs {
+            let sk_seed = seed(&hex(&r[0]));
+            let sk_prf = seed(&hex(&r[1]));
+            let pk_seed = seed(&hex(&r[2]));
+            let want_pk = hex(&r[3]);
+            let want_sk = hex(&r[4]);
+            let (sk, pk) = keygen(&sk_seed, &sk_prf, &pk_seed);
+            assert_eq!(&pk[..], &want_pk[..], "public key mismatch");
+            assert_eq!(&sk[..], &want_sk[..], "secret key mismatch");
+        }
+    }
+
+    #[test]
+    fn sign_internal_matches_official_vectors() {
+        let recs = records("siggen_internal_192s.txt");
+        assert!(!recs.is_empty());
+        for r in &recs {
+            let message = hex(&r[0]);
+            let sk = secret(&hex(&r[1]));
+            let want_sig = hex(&r[2]);
+            // Deterministic signing uses PK.seed as the additional randomness.
+            let addrnd = seed(&sk[2 * N..3 * N]);
+            let sig = sign_internal(&sk, &message, &addrnd);
+            assert_eq!(&sig[..], &want_sig[..], "signature mismatch");
+        }
+    }
+
+    #[test]
+    fn sign_external_matches_official_vectors() {
+        let recs = records("siggen_external_192s.txt");
+        assert!(!recs.is_empty());
+        for r in &recs {
+            let message = hex(&r[0]);
+            let context = hex(&r[1]);
+            let sk = secret(&hex(&r[2]));
+            let want_sig = hex(&r[3]);
+            let addrnd = seed(&sk[2 * N..3 * N]);
+            let sig = sign(&sk, &message, &context, &addrnd).unwrap();
+            assert_eq!(&sig[..], &want_sig[..], "signature mismatch");
+        }
+    }
+
+    #[test]
+    fn verify_internal_matches_official_vectors() {
+        let recs = records("sigver_internal_192s.txt");
+        assert!(!recs.is_empty());
+        for r in &recs {
+            let expected = r[0] == "1";
+            let pk = public(&hex(&r[1]));
+            let message = hex(&r[2]);
+            let sig = hex(&r[3]);
+            assert_eq!(verify_internal(&pk, &message, &sig), expected);
+        }
+    }
+
+    #[test]
+    fn verify_external_matches_official_vectors() {
+        let recs = records("sigver_external_192s.txt");
+        assert!(!recs.is_empty());
+        for r in &recs {
+            let expected = r[0] == "1";
+            let pk = public(&hex(&r[1]));
+            let message = hex(&r[2]);
+            let context = hex(&r[3]);
+            let sig = hex(&r[4]);
+            assert_eq!(verify(&pk, &message, &sig, &context), expected);
+        }
+    }
+
+    #[test]
+    fn sign_then_verify_round_trip() {
+        let (sk, pk) = keygen(&[1u8; N], &[2u8; N], &[3u8; N]);
+        let message = b"quantova slh-dsa round trip";
+        let context = b"ctx";
+        let addrnd = [9u8; N];
+        let sig = sign(&sk, message, context, &addrnd).unwrap();
+        assert!(verify(&pk, message, &sig, context));
+        assert!(!verify(&pk, b"other message", &sig, context));
+        assert!(!verify(&pk, message, &sig, b"other context"));
+    }
+}
