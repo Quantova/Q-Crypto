@@ -1,13 +1,12 @@
 //! ML-DSA (FIPS 204) - module-lattice digital signatures. The stack's primary signature scheme:
 //! account signing, validator attestations, and the QVM `MLDSA_VERIFY` opcode.
 //!
-//! This first piece provides the ML-DSA-65 parameter set (FIPS 204, security category 3) together
-//! with the polynomial arithmetic it is built on: the number theoretic transform, modular
-//! reduction, the bit packing, and the rounding and hint helpers.
+//! This module implements the ML-DSA-65 parameter set (FIPS 204, security category 3). It covers
+//! key generation, signing, and verification, together with the number theoretic transform, the
+//! sampling routines, the bit packing, and the hint mechanism. All hashing and expansion use
+//! SHAKE256 and SHAKE128 from the `sha3` module.
 
-// The key generation, signing, and verification routines that consume this arithmetic land in the
-// following piece, so the helpers below have no callers yet.
-#![allow(dead_code)]
+use crate::sha3::{shake128, shake256};
 
 // Parameters for ML-DSA-65 (FIPS 204, Table 1).
 const Q: i32 = 8380417; // prime modulus, 2^23 - 2^13 + 1
@@ -51,6 +50,10 @@ pub type Signature = [u8; SIGNATURE_BYTES];
 type Poly = [i32; N];
 
 const ZERO_POLY: Poly = [0i32; N];
+
+// SHAKE rates in bytes, used to size squeeze buffers for the rejection samplers.
+const SHAKE128_RATE: usize = 168;
+const SHAKE256_RATE: usize = 136;
 
 // Modular arithmetic over Z_q for inputs already reduced into [0, Q).
 
@@ -202,40 +205,12 @@ fn pointwise_acc(acc: &mut Poly, a: &Poly, b: &Poly) {
     }
 }
 
-// Bit packing (FIPS 204, section 7.1). Coefficients are packed least significant bit first.
+// SHAKE helpers.
 
-fn pack_bits(coeffs: &Poly, bits: usize, out: &mut Vec<u8>) {
-    let mask: u64 = (1u64 << bits) - 1;
-    let mut acc: u64 = 0;
-    let mut acc_bits = 0usize;
-    for &c in coeffs.iter() {
-        acc |= (c as u64 & mask) << acc_bits;
-        acc_bits += bits;
-        while acc_bits >= 8 {
-            out.push((acc & 0xff) as u8);
-            acc >>= 8;
-            acc_bits -= 8;
-        }
-    }
-}
-
-fn unpack_bits(data: &[u8], bits: usize) -> Poly {
-    let mask: u64 = (1u64 << bits) - 1;
-    let mut coeffs = ZERO_POLY;
-    let mut acc: u64 = 0;
-    let mut acc_bits = 0usize;
-    let mut byte = 0usize;
-    for c in coeffs.iter_mut() {
-        while acc_bits < bits {
-            acc |= (data[byte] as u64) << acc_bits;
-            byte += 1;
-            acc_bits += 8;
-        }
-        *c = (acc & mask) as i32;
-        acc >>= bits;
-        acc_bits -= bits;
-    }
-    coeffs
+fn shake256_bytes(input: &[u8], outlen: usize) -> Vec<u8> {
+    let mut out = vec![0u8; outlen];
+    shake256(input, &mut out);
+    out
 }
 
 // Rounding helpers (FIPS 204, section 7.4).
@@ -291,4 +266,695 @@ fn use_hint(h: u8, r: i32) -> i32 {
     } else {
         (r1 - 1).rem_euclid(m)
     }
+}
+
+// Bit packing (FIPS 204, section 7.1). Coefficients are packed least significant bit first.
+
+fn pack_bits(coeffs: &Poly, bits: usize, out: &mut Vec<u8>) {
+    let mask: u64 = (1u64 << bits) - 1;
+    let mut acc: u64 = 0;
+    let mut acc_bits = 0usize;
+    for &c in coeffs.iter() {
+        acc |= (c as u64 & mask) << acc_bits;
+        acc_bits += bits;
+        while acc_bits >= 8 {
+            out.push((acc & 0xff) as u8);
+            acc >>= 8;
+            acc_bits -= 8;
+        }
+    }
+}
+
+fn unpack_bits(data: &[u8], bits: usize) -> Poly {
+    let mask: u64 = (1u64 << bits) - 1;
+    let mut coeffs = ZERO_POLY;
+    let mut acc: u64 = 0;
+    let mut acc_bits = 0usize;
+    let mut byte = 0usize;
+    for c in coeffs.iter_mut() {
+        while acc_bits < bits {
+            acc |= (data[byte] as u64) << acc_bits;
+            byte += 1;
+            acc_bits += 8;
+        }
+        *c = (acc & mask) as i32;
+        acc >>= bits;
+        acc_bits -= bits;
+    }
+    coeffs
+}
+
+// Sampling routines (FIPS 204, section 7.3).
+
+// RejNTTPoly (Algorithm 30): rejection sample a uniform NTT-domain polynomial from a 34-byte seed.
+fn rej_ntt_poly(seed: &[u8]) -> Poly {
+    let mut a = ZERO_POLY;
+    let mut buflen = SHAKE128_RATE * 6;
+    loop {
+        let mut buf = vec![0u8; buflen];
+        shake128(seed, &mut buf);
+        let mut ctr = 0usize;
+        let mut pos = 0usize;
+        while ctr < N && pos + 3 <= buf.len() {
+            let b0 = buf[pos] as i32;
+            let b1 = buf[pos + 1] as i32;
+            let b2 = (buf[pos + 2] & 0x7f) as i32;
+            pos += 3;
+            let z = b0 | (b1 << 8) | (b2 << 16);
+            if z < Q {
+                a[ctr] = z;
+                ctr += 1;
+            }
+        }
+        if ctr == N {
+            return a;
+        }
+        buflen *= 2;
+    }
+}
+
+// CoeffFromHalfByte for ETA = 4 (FIPS 204, Algorithm 15).
+fn coeff_from_half_byte(b: u8) -> Option<i32> {
+    if (b as i32) < 9 {
+        Some(ETA - b as i32)
+    } else {
+        None
+    }
+}
+
+// RejBoundedPoly (Algorithm 31): rejection sample a polynomial with coefficients in [-ETA, ETA].
+fn rej_bounded_poly(seed: &[u8]) -> Poly {
+    let mut a = ZERO_POLY;
+    let mut buflen = SHAKE256_RATE * 5;
+    loop {
+        let buf = shake256_bytes(seed, buflen);
+        let mut ctr = 0usize;
+        let mut pos = 0usize;
+        while ctr < N && pos < buf.len() {
+            let b = buf[pos];
+            pos += 1;
+            if let Some(v) = coeff_from_half_byte(b & 0x0f) {
+                a[ctr] = v;
+                ctr += 1;
+            }
+            if ctr < N {
+                if let Some(v) = coeff_from_half_byte(b >> 4) {
+                    a[ctr] = v;
+                    ctr += 1;
+                }
+            }
+        }
+        if ctr == N {
+            return a;
+        }
+        buflen *= 2;
+    }
+}
+
+// ExpandA (Algorithm 32): derive the k-by-l matrix A of NTT-domain polynomials from rho.
+fn expand_a(rho: &[u8]) -> Vec<Vec<Poly>> {
+    let mut a = vec![vec![ZERO_POLY; L]; K];
+    let mut seed = [0u8; 34];
+    seed[..32].copy_from_slice(rho);
+    for r in 0..K {
+        for s in 0..L {
+            seed[32] = s as u8;
+            seed[33] = r as u8;
+            a[r][s] = rej_ntt_poly(&seed);
+        }
+    }
+    a
+}
+
+// ExpandS (Algorithm 33): derive the secret vectors s1 and s2 from rho_prime.
+fn expand_s(rho_prime: &[u8]) -> (Vec<Poly>, Vec<Poly>) {
+    let mut s1 = vec![ZERO_POLY; L];
+    let mut s2 = vec![ZERO_POLY; K];
+    let mut seed = [0u8; 66];
+    seed[..64].copy_from_slice(rho_prime);
+    for i in 0..L {
+        let idx = i as u16;
+        seed[64] = (idx & 0xff) as u8;
+        seed[65] = (idx >> 8) as u8;
+        s1[i] = rej_bounded_poly(&seed);
+    }
+    for i in 0..K {
+        let idx = (i + L) as u16;
+        seed[64] = (idx & 0xff) as u8;
+        seed[65] = (idx >> 8) as u8;
+        s2[i] = rej_bounded_poly(&seed);
+    }
+    (s1, s2)
+}
+
+// ExpandMask (Algorithm 34): derive the mask vector y from rho_prime_prime and the counter kappa.
+fn expand_mask(rho_pp: &[u8], kappa: usize) -> Vec<Poly> {
+    let mut y = vec![ZERO_POLY; L];
+    let mut seed = [0u8; 66];
+    seed[..64].copy_from_slice(rho_pp);
+    for r in 0..L {
+        let idx = (kappa + r) as u16;
+        seed[64] = (idx & 0xff) as u8;
+        seed[65] = (idx >> 8) as u8;
+        let v = shake256_bytes(&seed, 32 * 20);
+        let raw = unpack_bits(&v, 20);
+        for i in 0..N {
+            y[r][i] = to_pos(GAMMA1 - raw[i]);
+        }
+    }
+    y
+}
+
+// SampleInBall (Algorithm 29): derive the challenge polynomial from c_tilde.
+fn sample_in_ball(c_tilde: &[u8]) -> Poly {
+    let mut buflen = SHAKE256_RATE * 2;
+    loop {
+        let buf = shake256_bytes(c_tilde, buflen);
+        let mut c = ZERO_POLY;
+        let mut signs: u64 = 0;
+        for i in 0..8 {
+            signs |= (buf[i] as u64) << (8 * i);
+        }
+        let mut pos = 8usize;
+        let mut bit = 0usize;
+        let mut failed = false;
+        let mut i = N - TAU;
+        while i < N {
+            let mut j = 0usize;
+            loop {
+                if pos >= buf.len() {
+                    failed = true;
+                    break;
+                }
+                j = buf[pos] as usize;
+                pos += 1;
+                if j <= i {
+                    break;
+                }
+            }
+            if failed {
+                break;
+            }
+            c[i] = c[j];
+            c[j] = if (signs >> bit) & 1 == 1 { -1 } else { 1 };
+            bit += 1;
+            i += 1;
+        }
+        if !failed {
+            return c;
+        }
+        buflen *= 2;
+    }
+}
+
+// Key, signature, and message encodings (FIPS 204, section 7.2).
+
+fn pk_encode(rho: &[u8], t1: &[Poly]) -> PublicKey {
+    let mut out = Vec::with_capacity(PUBLIC_KEY_BYTES);
+    out.extend_from_slice(rho);
+    for poly in t1.iter() {
+        pack_bits(poly, 10, &mut out);
+    }
+    let mut pk = [0u8; PUBLIC_KEY_BYTES];
+    pk.copy_from_slice(&out);
+    pk
+}
+
+fn pk_decode(pk: &PublicKey) -> ([u8; 32], Vec<Poly>) {
+    let mut rho = [0u8; 32];
+    rho.copy_from_slice(&pk[..32]);
+    let mut t1 = vec![ZERO_POLY; K];
+    for i in 0..K {
+        let start = 32 + i * POLYT1_PACKED;
+        t1[i] = unpack_bits(&pk[start..start + POLYT1_PACKED], 10);
+    }
+    (rho, t1)
+}
+
+fn sk_encode(
+    rho: &[u8],
+    key: &[u8],
+    tr: &[u8],
+    s1: &[Poly],
+    s2: &[Poly],
+    t0: &[Poly],
+) -> SecretKey {
+    let mut out = Vec::with_capacity(SECRET_KEY_BYTES);
+    out.extend_from_slice(rho);
+    out.extend_from_slice(key);
+    out.extend_from_slice(tr);
+    for poly in s1.iter().chain(s2.iter()) {
+        let mut packed = ZERO_POLY;
+        for i in 0..N {
+            packed[i] = ETA - poly[i];
+        }
+        pack_bits(&packed, 4, &mut out);
+    }
+    for poly in t0.iter() {
+        let mut packed = ZERO_POLY;
+        for i in 0..N {
+            packed[i] = (1 << (D - 1)) - poly[i];
+        }
+        pack_bits(&packed, 13, &mut out);
+    }
+    let mut sk = [0u8; SECRET_KEY_BYTES];
+    sk.copy_from_slice(&out);
+    sk
+}
+
+struct SecretComponents {
+    rho: [u8; 32],
+    key: [u8; 32],
+    tr: [u8; 64],
+    s1: Vec<Poly>,
+    s2: Vec<Poly>,
+    t0: Vec<Poly>,
+}
+
+fn sk_decode(sk: &SecretKey) -> SecretComponents {
+    let mut rho = [0u8; 32];
+    rho.copy_from_slice(&sk[..32]);
+    let mut key = [0u8; 32];
+    key.copy_from_slice(&sk[32..64]);
+    let mut tr = [0u8; 64];
+    tr.copy_from_slice(&sk[64..128]);
+
+    let mut off = 128usize;
+    let mut s1 = vec![ZERO_POLY; L];
+    for poly in s1.iter_mut() {
+        let raw = unpack_bits(&sk[off..off + POLYETA_PACKED], 4);
+        for i in 0..N {
+            poly[i] = ETA - raw[i];
+        }
+        off += POLYETA_PACKED;
+    }
+    let mut s2 = vec![ZERO_POLY; K];
+    for poly in s2.iter_mut() {
+        let raw = unpack_bits(&sk[off..off + POLYETA_PACKED], 4);
+        for i in 0..N {
+            poly[i] = ETA - raw[i];
+        }
+        off += POLYETA_PACKED;
+    }
+    let mut t0 = vec![ZERO_POLY; K];
+    for poly in t0.iter_mut() {
+        let raw = unpack_bits(&sk[off..off + POLYT0_PACKED], 13);
+        for i in 0..N {
+            poly[i] = (1 << (D - 1)) - raw[i];
+        }
+        off += POLYT0_PACKED;
+    }
+    SecretComponents {
+        rho,
+        key,
+        tr,
+        s1,
+        s2,
+        t0,
+    }
+}
+
+// w1Encode (Algorithm 28): pack the high bits of w for the challenge hash.
+fn w1_encode(w1: &[Poly]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(K * POLYW1_PACKED);
+    for poly in w1.iter() {
+        pack_bits(poly, 4, &mut out);
+    }
+    out
+}
+
+// HintBitPack (Algorithm 20): encode the hint as positions plus running counts.
+fn hint_bit_pack(h: &[Poly]) -> Vec<u8> {
+    let mut y = vec![0u8; OMEGA + K];
+    let mut index = 0usize;
+    for i in 0..K {
+        for j in 0..N {
+            if h[i][j] != 0 {
+                y[index] = j as u8;
+                index += 1;
+            }
+        }
+        y[OMEGA + i] = index as u8;
+    }
+    y
+}
+
+// HintBitUnpack (Algorithm 21): decode the hint, returning None on any malformed encoding.
+fn hint_bit_unpack(y: &[u8]) -> Option<Vec<Poly>> {
+    let mut h = vec![ZERO_POLY; K];
+    let mut index = 0usize;
+    for i in 0..K {
+        let limit = y[OMEGA + i] as usize;
+        if limit < index || limit > OMEGA {
+            return None;
+        }
+        let first = index;
+        while index < limit {
+            if index > first && y[index - 1] >= y[index] {
+                return None;
+            }
+            h[i][y[index] as usize] = 1;
+            index += 1;
+        }
+    }
+    for &b in y.iter().take(OMEGA).skip(index) {
+        if b != 0 {
+            return None;
+        }
+    }
+    Some(h)
+}
+
+fn sig_encode(c_tilde: &[u8], z: &[Poly], h: &[Poly]) -> Signature {
+    let mut out = Vec::with_capacity(SIGNATURE_BYTES);
+    out.extend_from_slice(c_tilde);
+    for poly in z.iter() {
+        let mut packed = ZERO_POLY;
+        for i in 0..N {
+            packed[i] = GAMMA1 - center(poly[i]);
+        }
+        pack_bits(&packed, 20, &mut out);
+    }
+    out.extend_from_slice(&hint_bit_pack(h));
+    let mut sig = [0u8; SIGNATURE_BYTES];
+    sig.copy_from_slice(&out);
+    sig
+}
+
+struct DecodedSig {
+    c_tilde: Vec<u8>,
+    z: Vec<Poly>,
+    h: Vec<Poly>,
+}
+
+fn sig_decode(sig: &Signature) -> Option<DecodedSig> {
+    let c_tilde = sig[..CTILDE_BYTES].to_vec();
+    let mut z = vec![ZERO_POLY; L];
+    let mut off = CTILDE_BYTES;
+    for poly in z.iter_mut() {
+        let raw = unpack_bits(&sig[off..off + POLYZ_PACKED], 20);
+        for i in 0..N {
+            poly[i] = GAMMA1 - raw[i];
+        }
+        off += POLYZ_PACKED;
+    }
+    let h = hint_bit_unpack(&sig[off..off + OMEGA + K])?;
+    Some(DecodedSig { c_tilde, z, h })
+}
+
+// The number of ones in a hint.
+fn hint_weight(h: &[Poly]) -> usize {
+    h.iter()
+        .map(|poly| poly.iter().filter(|&&x| x != 0).count())
+        .sum()
+}
+
+/// Generate an ML-DSA-65 key pair deterministically from a 32-byte seed
+/// (FIPS 204, Algorithm 6, ML-DSA.KeyGen_internal).
+pub fn keygen(seed: &[u8; SEED_BYTES]) -> (PublicKey, SecretKey) {
+    let mut h_in = Vec::with_capacity(34);
+    h_in.extend_from_slice(seed);
+    h_in.push(K as u8);
+    h_in.push(L as u8);
+    let expanded = shake256_bytes(&h_in, 128);
+    let rho = &expanded[..32];
+    let rho_prime = &expanded[32..96];
+    let key = &expanded[96..128];
+
+    let a = expand_a(rho);
+    let (s1, s2) = expand_s(rho_prime);
+
+    // s1_hat = NTT(s1).
+    let mut s1_hat = s1.clone();
+    for poly in s1_hat.iter_mut() {
+        for c in poly.iter_mut() {
+            *c = to_pos(*c);
+        }
+        ntt(poly);
+    }
+
+    // t = A * s1 + s2, then split into (t1, t0) by Power2Round.
+    let mut t1 = vec![ZERO_POLY; K];
+    let mut t0 = vec![ZERO_POLY; K];
+    for i in 0..K {
+        let mut acc = ZERO_POLY;
+        for j in 0..L {
+            pointwise_acc(&mut acc, &a[i][j], &s1_hat[j]);
+        }
+        inv_ntt(&mut acc);
+        for n in 0..N {
+            let t = add_q(acc[n], to_pos(s2[i][n]));
+            let (r1, r0) = power2round(t);
+            t1[i][n] = r1;
+            t0[i][n] = r0;
+        }
+    }
+
+    let pk = pk_encode(rho, &t1);
+    let tr = shake256_bytes(&pk, 64);
+    let sk = sk_encode(rho, key, &tr, &s1, &s2, &t0);
+    (pk, sk)
+}
+
+// The core signing loop shared by the internal and external interfaces (FIPS 204, Algorithm 7).
+// mu is the 64-byte message representative; rnd is the 32-byte per-signature randomizer.
+fn sign_with_mu(sk: &SecretKey, mu: &[u8], rnd: &[u8; 32]) -> Signature {
+    let sc = sk_decode(sk);
+    let a = expand_a(&sc.rho);
+
+    let mut s1_hat = sc.s1.clone();
+    for poly in s1_hat.iter_mut() {
+        for c in poly.iter_mut() {
+            *c = to_pos(*c);
+        }
+        ntt(poly);
+    }
+    let mut s2_hat = sc.s2.clone();
+    for poly in s2_hat.iter_mut() {
+        for c in poly.iter_mut() {
+            *c = to_pos(*c);
+        }
+        ntt(poly);
+    }
+    let mut t0_hat = sc.t0.clone();
+    for poly in t0_hat.iter_mut() {
+        for c in poly.iter_mut() {
+            *c = to_pos(*c);
+        }
+        ntt(poly);
+    }
+
+    // rho_prime_prime = H(K || rnd || mu, 64).
+    let mut seed = Vec::with_capacity(32 + 32 + mu.len());
+    seed.extend_from_slice(&sc.key);
+    seed.extend_from_slice(rnd);
+    seed.extend_from_slice(mu);
+    let rho_pp = shake256_bytes(&seed, 64);
+
+    let mut kappa = 0usize;
+    loop {
+        let y = expand_mask(&rho_pp, kappa);
+        kappa += L;
+
+        // w = A * y.
+        let mut y_hat = y.clone();
+        for poly in y_hat.iter_mut() {
+            ntt(poly);
+        }
+        let mut w = vec![ZERO_POLY; K];
+        let mut w1 = vec![ZERO_POLY; K];
+        for i in 0..K {
+            let mut acc = ZERO_POLY;
+            for j in 0..L {
+                pointwise_acc(&mut acc, &a[i][j], &y_hat[j]);
+            }
+            inv_ntt(&mut acc);
+            w[i] = acc;
+            for n in 0..N {
+                w1[i][n] = high_bits(w[i][n]);
+            }
+        }
+
+        // c_tilde = H(mu || w1Encode(w1), CTILDE_BYTES), then c = SampleInBall(c_tilde).
+        let mut ch_in = Vec::with_capacity(mu.len() + K * POLYW1_PACKED);
+        ch_in.extend_from_slice(mu);
+        ch_in.extend_from_slice(&w1_encode(&w1));
+        let c_tilde = shake256_bytes(&ch_in, CTILDE_BYTES);
+        let c = sample_in_ball(&c_tilde);
+        let mut c_hat = c;
+        ntt(&mut c_hat);
+
+        // z = y + c*s1.
+        let mut z = vec![ZERO_POLY; L];
+        for j in 0..L {
+            let mut cs1 = ZERO_POLY;
+            pointwise_acc(&mut cs1, &c_hat, &s1_hat[j]);
+            inv_ntt(&mut cs1);
+            for n in 0..N {
+                z[j][n] = add_q(y[j][n], cs1[n]);
+            }
+        }
+        let mut z_norm = 0i32;
+        for poly in z.iter() {
+            z_norm = z_norm.max(inf_norm(poly));
+        }
+
+        // r0 = LowBits(w - c*s2).
+        let mut cs2 = vec![ZERO_POLY; K];
+        let mut r0_norm = 0i32;
+        for i in 0..K {
+            let mut acc = ZERO_POLY;
+            pointwise_acc(&mut acc, &c_hat, &s2_hat[i]);
+            inv_ntt(&mut acc);
+            cs2[i] = acc;
+            for n in 0..N {
+                let r0 = low_bits(sub_q(w[i][n], cs2[i][n]));
+                r0_norm = r0_norm.max(r0.abs());
+            }
+        }
+
+        if z_norm >= GAMMA1 - BETA || r0_norm >= GAMMA2 - BETA {
+            continue;
+        }
+
+        // Build the hint from c*t0.
+        let mut h = vec![ZERO_POLY; K];
+        let mut ct0_norm = 0i32;
+        for i in 0..K {
+            let mut ct0 = ZERO_POLY;
+            pointwise_acc(&mut ct0, &c_hat, &t0_hat[i]);
+            inv_ntt(&mut ct0);
+            for n in 0..N {
+                ct0_norm = ct0_norm.max(center(ct0[n]).abs());
+                let neg_ct0 = sub_q(0, ct0[n]);
+                let r = add_q(sub_q(w[i][n], cs2[i][n]), ct0[n]);
+                h[i][n] = make_hint(neg_ct0, r) as i32;
+            }
+        }
+
+        if ct0_norm >= GAMMA2 || hint_weight(&h) > OMEGA {
+            continue;
+        }
+
+        return sig_encode(&c_tilde, &z, &h);
+    }
+}
+
+// Compute mu = H(tr || m_prime, 64).
+fn compute_mu(tr: &[u8], m_prime: &[u8]) -> Vec<u8> {
+    let mut buf = Vec::with_capacity(tr.len() + m_prime.len());
+    buf.extend_from_slice(tr);
+    buf.extend_from_slice(m_prime);
+    shake256_bytes(&buf, 64)
+}
+
+/// Sign a pre-formatted message representative (FIPS 204, Algorithm 7, ML-DSA.Sign_internal).
+pub fn sign_internal(sk: &SecretKey, m_prime: &[u8], rnd: &[u8; 32]) -> Signature {
+    let sc = sk_decode(sk);
+    let mu = compute_mu(&sc.tr, m_prime);
+    sign_with_mu(sk, &mu, rnd)
+}
+
+/// Verify a pre-formatted message representative (FIPS 204, Algorithm 8, ML-DSA.Verify_internal).
+pub fn verify_internal(pk: &PublicKey, m_prime: &[u8], sig: &Signature) -> bool {
+    let tr = shake256_bytes(pk, 64);
+    let mu = compute_mu(&tr, m_prime);
+    verify_with_mu(pk, &mu, sig)
+}
+
+// The core verification routine shared by the internal and external interfaces.
+fn verify_with_mu(pk: &PublicKey, mu: &[u8], sig: &Signature) -> bool {
+    let decoded = match sig_decode(sig) {
+        Some(d) => d,
+        None => return false,
+    };
+    let (rho, t1) = pk_decode(pk);
+
+    let mut z_norm = 0i32;
+    for poly in decoded.z.iter() {
+        for &c in poly.iter() {
+            z_norm = z_norm.max(c.abs());
+        }
+    }
+    if z_norm >= GAMMA1 - BETA {
+        return false;
+    }
+
+    let a = expand_a(&rho);
+    let c = sample_in_ball(&decoded.c_tilde);
+    let mut c_hat = c;
+    ntt(&mut c_hat);
+
+    // z_hat = NTT(z) with z coefficients mapped into [0, Q).
+    let mut z_hat = decoded.z.clone();
+    for poly in z_hat.iter_mut() {
+        for c in poly.iter_mut() {
+            *c = to_pos(*c);
+        }
+        ntt(poly);
+    }
+
+    // t1_hat = NTT(t1 * 2^D).
+    let mut t1_hat = t1.clone();
+    for poly in t1_hat.iter_mut() {
+        for c in poly.iter_mut() {
+            *c = *c << D;
+        }
+        ntt(poly);
+    }
+
+    // w_approx = A*z - c*t1*2^D, then w1 = UseHint(h, w_approx).
+    let mut w1 = vec![ZERO_POLY; K];
+    for i in 0..K {
+        let mut acc = ZERO_POLY;
+        for j in 0..L {
+            pointwise_acc(&mut acc, &a[i][j], &z_hat[j]);
+        }
+        let mut ct1 = ZERO_POLY;
+        pointwise_acc(&mut ct1, &c_hat, &t1_hat[i]);
+        for n in 0..N {
+            acc[n] = sub_q(acc[n], ct1[n]);
+        }
+        inv_ntt(&mut acc);
+        for n in 0..N {
+            w1[i][n] = use_hint(decoded.h[i][n] as u8, acc[n]);
+        }
+    }
+
+    let mut ch_in = Vec::with_capacity(mu.len() + K * POLYW1_PACKED);
+    ch_in.extend_from_slice(mu);
+    ch_in.extend_from_slice(&w1_encode(&w1));
+    let c_tilde = shake256_bytes(&ch_in, CTILDE_BYTES);
+
+    c_tilde == decoded.c_tilde
+}
+
+// Format the external message representative M' = 0x00 || len(ctx) || ctx || message (pure variant).
+fn format_message(context: &[u8], message: &[u8]) -> Option<Vec<u8>> {
+    if context.len() > 255 {
+        return None;
+    }
+    let mut m = Vec::with_capacity(2 + context.len() + message.len());
+    m.push(0x00);
+    m.push(context.len() as u8);
+    m.extend_from_slice(context);
+    m.extend_from_slice(message);
+    Some(m)
+}
+
+/// Sign a message with an application context string (FIPS 204, Algorithm 2, ML-DSA.Sign, pure).
+/// Pass a 32-byte zero randomizer for deterministic signing. Returns `None` if the context exceeds
+/// 255 bytes.
+pub fn sign(sk: &SecretKey, message: &[u8], context: &[u8], rnd: &[u8; 32]) -> Option<Signature> {
+    let m_prime = format_message(context, message)?;
+    Some(sign_internal(sk, &m_prime, rnd))
+}
+
+/// Verify a message and its context string (FIPS 204, Algorithm 3, ML-DSA.Verify, pure).
+pub fn verify(pk: &PublicKey, message: &[u8], signature: &Signature, context: &[u8]) -> bool {
+    let m_prime = match format_message(context, message) {
+        Some(m) => m,
+        None => return false,
+    };
+    verify_internal(pk, &m_prime, signature)
 }
