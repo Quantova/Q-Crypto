@@ -1,12 +1,5 @@
-# NIST Known-Answer Test Vectors
+# Test vectors
 
-The official NIST KATs for each primitive are checked in here and every implementation is validated
-against them before it is considered done:
+The official NIST known answer tests for each primitive are checked in here, and every implementation is validated against them before it is considered done. The folders cover SHA 3 from FIPS 202, ML DSA from FIPS 204, ML KEM from FIPS 203, and SLH DSA from FIPS 205. The FN DSA vectors are added once FN DSA is published in final form.
 
-- `sha3/` — FIPS 202 (SHA3-256, SHAKE128/256)
-- `ml_dsa/` — FIPS 204
-- `ml_kem/` — FIPS 203
-- `slh_dsa/` — FIPS 205
-- `fn_dsa/` — added on FN-DSA final publication
-
-Frozen cross-repo vectors (codec, addresses, tx encoding) live separately in Quantova-Conformance.
+The frozen cross repository vectors for the codec, the addresses, and the transaction encoding live separately in the Quantova Conformance repository.
