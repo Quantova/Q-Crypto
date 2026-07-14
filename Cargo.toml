@@ -9,7 +9,7 @@ rust-version = "1.75"
 
 [features]
 default = []
-# FN-DSA is feature-flagged and OFF by default until final publication (POLICY-crypto.md §2).
+# FN-DSA is feature-flagged and OFF by default until final publication (POLICY-crypto.md section 2).
 fn-dsa = []
 
 [dependencies]

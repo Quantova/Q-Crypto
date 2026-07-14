@@ -1,10 +1,10 @@
-//! qtv-crypto — the single source of cryptography in the Quantova organization.
+//! qtv-crypto - the single source of cryptography in the Quantova organization.
 //!
 //! Only the NIST post-quantum algorithms named in POLICY-crypto.md exist here. No classical
 //! cryptography is representable. Every primitive is implemented from its FIPS specification and
 //! validated against the NIST known-answer tests in `vectors/`.
 //!
-//! Implementation order (each gates the next): sha3 → ml_dsa → ml_kem → slh_dsa → vrf.
+//! Implementation order (each gates the next): sha3, then ml_dsa, then ml_kem, then slh_dsa, then vrf.
 
 #![forbid(unsafe_op_in_unsafe_fn)]
 
