@@ -1,8 +1,6 @@
 //! ML-KEM (FIPS 203) - module lattice key encapsulation. Backs the QUIC transport key exchange in
 
-// The key generation, encapsulation, and decapsulation routines that consume this arithmetic land
-// in the following piece, so the helpers below have no callers yet.
-#![allow(dead_code)]
+use crate::sha3::{sha3_256, sha3_512, shake128, shake256};
 
 // Parameters for ML-KEM-768 (FIPS 203, Table 2).
 const Q: i32 = 3329; // prime modulus, 13 * 2^8 + 1
@@ -247,4 +245,323 @@ fn byte_decode_12(data: &[u8]) -> Poly {
         *c %= Q;
     }
     p
+}
+
+// Sampling routines (FIPS 203, 4.2.2).
+
+// SHAKE128 rate in bytes, used to size the squeeze buffer for the uniform sampler.
+const SHAKE128_RATE: usize = 168;
+
+// SampleNTT (Algorithm 7): rejection sample a uniform NTT-domain element from a 34-byte seed.
+fn sample_ntt(seed: &[u8]) -> Poly {
+    let mut a = ZERO_POLY;
+    let mut buflen = SHAKE128_RATE * 6;
+    loop {
+        let mut buf = vec![0u8; buflen];
+        shake128(seed, &mut buf);
+        let mut ctr = 0usize;
+        let mut pos = 0usize;
+        while ctr < N && pos + 3 <= buf.len() {
+            let d1 = buf[pos] as i32 + 256 * ((buf[pos + 1] & 0x0f) as i32);
+            let d2 = (buf[pos + 1] >> 4) as i32 + 16 * (buf[pos + 2] as i32);
+            pos += 3;
+            if d1 < Q {
+                a[ctr] = d1;
+                ctr += 1;
+            }
+            if d2 < Q && ctr < N {
+                a[ctr] = d2;
+                ctr += 1;
+            }
+        }
+        if ctr == N {
+            return a;
+        }
+        buflen *= 2;
+    }
+}
+
+// SamplePolyCBD_eta (Algorithm 8): sample an element with coefficients from a centered binomial
+// distribution over the byte array (length 64*eta).
+fn sample_poly_cbd(bytes: &[u8], eta: usize) -> Poly {
+    let bit = |l: usize| -> i32 { ((bytes[l >> 3] >> (l & 7)) & 1) as i32 };
+    let mut f = ZERO_POLY;
+    for i in 0..N {
+        let mut x = 0i32;
+        let mut y = 0i32;
+        for j in 0..eta {
+            x += bit(2 * i * eta + j);
+            y += bit(2 * i * eta + eta + j);
+        }
+        f[i] = (x - y).rem_euclid(Q);
+    }
+    f
+}
+
+// PRF_eta (FIPS 203, 4.1): SHAKE256 keyed by a 32-byte seed and a one-byte nonce, 64*eta bytes out.
+fn prf(eta: usize, seed: &[u8], nonce: u8) -> Vec<u8> {
+    let mut input = Vec::with_capacity(33);
+    input.extend_from_slice(seed);
+    input.push(nonce);
+    let mut out = vec![0u8; 64 * eta];
+    shake256(&input, &mut out);
+    out
+}
+
+// ExpandA: derive the k-by-k matrix of NTT-domain elements from rho. When transpose is false, entry
+// [i][j] is sampled from rho || j || i (the layout used by key generation); when true, from
+// rho || i || j (the transposed layout used by encryption).
+fn expand_a(rho: &[u8], transpose: bool) -> Vec<Vec<Poly>> {
+    let mut a = vec![vec![ZERO_POLY; K]; K];
+    let mut seed = [0u8; 34];
+    seed[..32].copy_from_slice(rho);
+    for i in 0..K {
+        for j in 0..K {
+            if transpose {
+                seed[32] = i as u8;
+                seed[33] = j as u8;
+            } else {
+                seed[32] = j as u8;
+                seed[33] = i as u8;
+            }
+            a[i][j] = sample_ntt(&seed);
+        }
+    }
+    a
+}
+
+// K-PKE.KeyGen (FIPS 203, Algorithm 13): expand the seed into an encryption key pair.
+fn kpke_keygen(d: &[u8]) -> (Vec<u8>, Vec<u8>) {
+    let mut g_in = Vec::with_capacity(33);
+    g_in.extend_from_slice(d);
+    g_in.push(K as u8);
+    let g = sha3_512(&g_in);
+    let rho = &g[..32];
+    let sigma = &g[32..];
+
+    let a = expand_a(rho, false);
+
+    let mut nonce = 0u8;
+    let mut s = vec![ZERO_POLY; K];
+    for poly in s.iter_mut() {
+        *poly = sample_poly_cbd(&prf(ETA1, sigma, nonce), ETA1);
+        nonce += 1;
+    }
+    let mut e = vec![ZERO_POLY; K];
+    for poly in e.iter_mut() {
+        *poly = sample_poly_cbd(&prf(ETA1, sigma, nonce), ETA1);
+        nonce += 1;
+    }
+    for poly in s.iter_mut() {
+        ntt(poly);
+    }
+    for poly in e.iter_mut() {
+        ntt(poly);
+    }
+
+    // t_hat = A_hat * s_hat + e_hat.
+    let mut t = vec![ZERO_POLY; K];
+    for i in 0..K {
+        let mut acc = ZERO_POLY;
+        for j in 0..K {
+            pointwise_acc(&mut acc, &a[i][j], &s[j]);
+        }
+        for n in 0..N {
+            t[i][n] = add_q(acc[n], e[i][n]);
+        }
+    }
+
+    let mut ek = Vec::with_capacity(ENCAPS_KEY_BYTES);
+    for poly in t.iter() {
+        pack_bits(poly, 12, &mut ek);
+    }
+    ek.extend_from_slice(rho);
+
+    let mut dk = Vec::with_capacity(K * POLY_BYTES);
+    for poly in s.iter() {
+        pack_bits(poly, 12, &mut dk);
+    }
+    (ek, dk)
+}
+
+// K-PKE.Encrypt (FIPS 203, Algorithm 14): encrypt the 32-byte message m under ek with randomness r.
+fn kpke_encrypt(ek: &[u8], m: &[u8], r: &[u8]) -> Vec<u8> {
+    let mut t = vec![ZERO_POLY; K];
+    for i in 0..K {
+        t[i] = byte_decode_12(&ek[i * POLY_BYTES..(i + 1) * POLY_BYTES]);
+    }
+    let rho = &ek[K * POLY_BYTES..K * POLY_BYTES + 32];
+    let a = expand_a(rho, true);
+
+    let mut nonce = 0u8;
+    let mut y = vec![ZERO_POLY; K];
+    for poly in y.iter_mut() {
+        *poly = sample_poly_cbd(&prf(ETA1, r, nonce), ETA1);
+        nonce += 1;
+    }
+    let mut e1 = vec![ZERO_POLY; K];
+    for poly in e1.iter_mut() {
+        *poly = sample_poly_cbd(&prf(ETA2, r, nonce), ETA2);
+        nonce += 1;
+    }
+    let e2 = sample_poly_cbd(&prf(ETA2, r, nonce), ETA2);
+
+    for poly in y.iter_mut() {
+        ntt(poly);
+    }
+
+    // u = NTT^{-1}(A_hat^T * y_hat) + e1.
+    let mut u = vec![ZERO_POLY; K];
+    for i in 0..K {
+        let mut acc = ZERO_POLY;
+        for j in 0..K {
+            pointwise_acc(&mut acc, &a[i][j], &y[j]);
+        }
+        inv_ntt(&mut acc);
+        for n in 0..N {
+            u[i][n] = add_q(acc[n], e1[i][n]);
+        }
+    }
+
+    // v = NTT^{-1}(t_hat^T * y_hat) + e2 + Decompress_1(m).
+    let mut acc = ZERO_POLY;
+    for i in 0..K {
+        pointwise_acc(&mut acc, &t[i], &y[i]);
+    }
+    inv_ntt(&mut acc);
+    let mu = unpack_bits(m, 1);
+    let mut v = ZERO_POLY;
+    for n in 0..N {
+        v[n] = add_q(add_q(acc[n], e2[n]), decompress(mu[n], 1));
+    }
+
+    let mut c = Vec::with_capacity(CIPHERTEXT_BYTES);
+    for poly in u.iter() {
+        let mut comp = ZERO_POLY;
+        for n in 0..N {
+            comp[n] = compress(poly[n], DU);
+        }
+        pack_bits(&comp, DU, &mut c);
+    }
+    let mut comp = ZERO_POLY;
+    for n in 0..N {
+        comp[n] = compress(v[n], DV);
+    }
+    pack_bits(&comp, DV, &mut c);
+    c
+}
+
+// K-PKE.Decrypt (FIPS 203, Algorithm 15): recover the 32-byte message from the ciphertext.
+fn kpke_decrypt(dk: &[u8], c: &[u8]) -> Vec<u8> {
+    let split = 32 * DU * K;
+    let mut u = vec![ZERO_POLY; K];
+    for i in 0..K {
+        let raw = unpack_bits(&c[i * 32 * DU..(i + 1) * 32 * DU], DU);
+        for n in 0..N {
+            u[i][n] = decompress(raw[n], DU);
+        }
+    }
+    let raw = unpack_bits(&c[split..split + 32 * DV], DV);
+    let mut v = ZERO_POLY;
+    for n in 0..N {
+        v[n] = decompress(raw[n], DV);
+    }
+
+    let mut s = vec![ZERO_POLY; K];
+    for i in 0..K {
+        s[i] = byte_decode_12(&dk[i * POLY_BYTES..(i + 1) * POLY_BYTES]);
+    }
+
+    for poly in u.iter_mut() {
+        ntt(poly);
+    }
+    let mut acc = ZERO_POLY;
+    for i in 0..K {
+        pointwise_acc(&mut acc, &s[i], &u[i]);
+    }
+    inv_ntt(&mut acc);
+
+    let mut w = ZERO_POLY;
+    for n in 0..N {
+        w[n] = compress(sub_q(v[n], acc[n]), 1);
+    }
+    let mut out = Vec::with_capacity(32);
+    pack_bits(&w, 1, &mut out);
+    out
+}
+
+// Constant-time equality mask: 0xff when the slices are equal, 0x00 otherwise.
+fn ct_eq(a: &[u8], b: &[u8]) -> u8 {
+    let mut diff = 0u8;
+    for i in 0..a.len() {
+        diff |= a[i] ^ b[i];
+    }
+    (((diff as u16).wrapping_sub(1)) >> 8) as u8
+}
+
+/// Generate an ML-KEM-768 key pair deterministically from the 32-byte seeds d and z
+pub fn keygen(d: &[u8; SEED_BYTES], z: &[u8; SEED_BYTES]) -> (EncapsKey, DecapsKey) {
+    let (ek_pke, dk_pke) = kpke_keygen(d);
+
+    let mut ek = [0u8; ENCAPS_KEY_BYTES];
+    ek.copy_from_slice(&ek_pke);
+
+    let mut dk = Vec::with_capacity(DECAPS_KEY_BYTES);
+    dk.extend_from_slice(&dk_pke);
+    dk.extend_from_slice(&ek_pke);
+    dk.extend_from_slice(&sha3_256(&ek_pke));
+    dk.extend_from_slice(z);
+
+    let mut dk_arr = [0u8; DECAPS_KEY_BYTES];
+    dk_arr.copy_from_slice(&dk);
+    (ek, dk_arr)
+}
+
+/// Encapsulate to an encapsulation key using the 32-byte message m, returning the shared secret and
+pub fn encaps(ek: &EncapsKey, m: &[u8; SEED_BYTES]) -> (SharedSecret, Ciphertext) {
+    let mut g_in = Vec::with_capacity(64);
+    g_in.extend_from_slice(m);
+    g_in.extend_from_slice(&sha3_256(ek));
+    let g = sha3_512(&g_in);
+
+    let mut shared = [0u8; SHARED_SECRET_BYTES];
+    shared.copy_from_slice(&g[..32]);
+
+    let c = kpke_encrypt(ek, m, &g[32..]);
+    let mut ct = [0u8; CIPHERTEXT_BYTES];
+    ct.copy_from_slice(&c);
+    (shared, ct)
+}
+
+/// Decapsulate a ciphertext with a decapsulation key, returning the shared secret. On a ciphertext
+pub fn decaps(dk: &DecapsKey, c: &Ciphertext) -> SharedSecret {
+    let dk_pke = &dk[..K * POLY_BYTES];
+    let ek_pke = &dk[K * POLY_BYTES..2 * K * POLY_BYTES + 32];
+    let h = &dk[2 * K * POLY_BYTES + 32..2 * K * POLY_BYTES + 64];
+    let z = &dk[2 * K * POLY_BYTES + 64..2 * K * POLY_BYTES + 96];
+
+    let m_prime = kpke_decrypt(dk_pke, c);
+
+    let mut g_in = Vec::with_capacity(64);
+    g_in.extend_from_slice(&m_prime);
+    g_in.extend_from_slice(h);
+    let g = sha3_512(&g_in);
+    let mut k_prime = [0u8; SHARED_SECRET_BYTES];
+    k_prime.copy_from_slice(&g[..32]);
+    let r_prime = &g[32..];
+
+    let mut j_in = Vec::with_capacity(32 + CIPHERTEXT_BYTES);
+    j_in.extend_from_slice(z);
+    j_in.extend_from_slice(c);
+    let mut k_bar = [0u8; SHARED_SECRET_BYTES];
+    shake256(&j_in, &mut k_bar);
+
+    let c_prime = kpke_encrypt(ek_pke, &m_prime, r_prime);
+    let keep = ct_eq(&c_prime, c);
+
+    let mut shared = [0u8; SHARED_SECRET_BYTES];
+    for i in 0..SHARED_SECRET_BYTES {
+        shared[i] = (keep & k_prime[i]) | (!keep & k_bar[i]);
+    }
+    shared
 }
