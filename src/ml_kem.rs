@@ -576,3 +576,100 @@ pub fn decaps(dk: &DecapsKey, c: &Ciphertext) -> SharedSecret {
     }
     shared
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use std::path::PathBuf;
+
+    fn hex(s: &str) -> Vec<u8> {
+        assert!(s.len() % 2 == 0);
+        (0..s.len() / 2)
+            .map(|i| u8::from_str_radix(&s[2 * i..2 * i + 2], 16).unwrap())
+            .collect()
+    }
+
+    fn as_array<const M: usize>(v: &[u8]) -> [u8; M] {
+        let mut a = [0u8; M];
+        a.copy_from_slice(v);
+        a
+    }
+
+    fn seed32(v: &[u8]) -> [u8; 32] {
+        as_array::<32>(v)
+    }
+
+    fn load(name: &str) -> String {
+        let mut path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        path.push("vectors/ml-kem");
+        path.push(name);
+        fs::read_to_string(path).unwrap()
+    }
+
+    fn records(name: &str) -> Vec<Vec<String>> {
+        load(name)
+            .lines()
+            .filter(|l| !l.is_empty() && !l.starts_with('#'))
+            .map(|l| l.split_whitespace().map(|s| s.to_string()).collect())
+            .collect()
+    }
+
+    #[test]
+    fn keygen_matches_official_vectors() {
+        let recs = records("keygen_768.txt");
+        assert!(!recs.is_empty());
+        for r in &recs {
+            let d = seed32(&hex(&r[0]));
+            let z = seed32(&hex(&r[1]));
+            let want_ek = hex(&r[2]);
+            let want_dk = hex(&r[3]);
+            let (ek, dk) = keygen(&d, &z);
+            assert_eq!(&ek[..], &want_ek[..], "encapsulation key mismatch");
+            assert_eq!(&dk[..], &want_dk[..], "decapsulation key mismatch");
+        }
+    }
+
+    #[test]
+    fn encaps_matches_official_vectors() {
+        let recs = records("encaps_768.txt");
+        assert!(!recs.is_empty());
+        for r in &recs {
+            let ek = as_array::<ENCAPS_KEY_BYTES>(&hex(&r[0]));
+            let m = seed32(&hex(&r[1]));
+            let want_c = hex(&r[2]);
+            let want_k = hex(&r[3]);
+            let (k, c) = encaps(&ek, &m);
+            assert_eq!(&c[..], &want_c[..], "ciphertext mismatch");
+            assert_eq!(&k[..], &want_k[..], "shared secret mismatch");
+        }
+    }
+
+    #[test]
+    fn decaps_matches_official_vectors() {
+        let recs = records("decaps_768.txt");
+        assert!(!recs.is_empty());
+        for r in &recs {
+            let dk = as_array::<DECAPS_KEY_BYTES>(&hex(&r[0]));
+            let c = as_array::<CIPHERTEXT_BYTES>(&hex(&r[1]));
+            let want_k = hex(&r[2]);
+            let k = decaps(&dk, &c);
+            assert_eq!(&k[..], &want_k[..], "shared secret mismatch");
+        }
+    }
+
+    #[test]
+    fn encaps_then_decaps_round_trip() {
+        let d = [3u8; 32];
+        let z = [5u8; 32];
+        let (ek, dk) = keygen(&d, &z);
+        let m = [9u8; 32];
+        let (k, c) = encaps(&ek, &m);
+        assert_eq!(decaps(&dk, &c), k);
+
+        // A tampered ciphertext must decapsulate to the implicit rejection secret, not to k.
+        let mut bad = c;
+        bad[0] ^= 1;
+        assert_ne!(decaps(&dk, &bad), k);
+    }
+}
