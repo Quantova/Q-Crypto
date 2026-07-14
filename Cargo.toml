@@ -1,0 +1,17 @@
+[package]
+name = "qtv-crypto"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0 OR MIT"
+description = "The single audited post-quantum cryptography crate for the Quantova stack: ML-KEM, ML-DSA, SLH-DSA, FN-DSA, SHA-3/SHAKE and a hash-based PQ VRF, implemented from the FIPS specifications and validated against NIST test vectors."
+repository = "https://github.com/Quantova/Q-Crypto"
+rust-version = "1.75"
+
+[features]
+default = []
+# FN-DSA is feature-flagged and OFF by default until final publication (POLICY-crypto.md §2).
+fn-dsa = []
+
+[dependencies]
+
+[dev-dependencies]
