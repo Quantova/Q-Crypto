@@ -151,3 +151,94 @@ pub fn shake128(input: &[u8], output: &mut [u8]) {
 pub fn shake256(input: &[u8], output: &mut [u8]) {
     sponge(136, 0x1f, input, output);
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Decode an even-length hexadecimal string into a byte vector.
+    fn hex(s: &str) -> Vec<u8> {
+        assert!(s.len() % 2 == 0);
+        (0..s.len() / 2)
+            .map(|i| u8::from_str_radix(&s[2 * i..2 * i + 2], 16).unwrap())
+            .collect()
+    }
+
+    #[test]
+    fn sha3_256_known_answers() {
+        assert_eq!(
+            sha3_256(b"")[..],
+            hex("a7ffc6f8bf1ed76651c14756a061d662f580ff4de43b49fa82d80a4b80f8434a")[..]
+        );
+        assert_eq!(
+            sha3_256(b"abc")[..],
+            hex("3a985da74fe225b2045c172d6bd390bd855f086e3e9d525b46bfe24511431532")[..]
+        );
+    }
+
+    #[test]
+    fn sha3_512_known_answers() {
+        assert_eq!(
+            sha3_512(b"")[..],
+            hex(
+                "a69f73cca23a9ac5c8b567dc185a756e97c982164fe25859e0d1dcc1475c80a6\
+                 15b2123af1f5f94c11e3e9402c3ac558f500199d95b6d3e301758586281dcd26"
+            )[..]
+        );
+        assert_eq!(
+            sha3_512(b"abc")[..],
+            hex(
+                "b751850b1a57168a5693cd924b6b096e08f621827444f70d884f5d0240d2712e\
+                 10e116e9192af3c91a7ec57647e3934057340b4cf408d5a56592f8274eec53f0"
+            )[..]
+        );
+    }
+
+    #[test]
+    fn shake128_known_answers() {
+        let mut empty = [0u8; 32];
+        shake128(b"", &mut empty);
+        assert_eq!(
+            empty[..],
+            hex("7f9c2ba4e88f827d616045507605853ed73b8093f6efbc88eb1a6eacfa66ef26")[..]
+        );
+
+        let mut abc = [0u8; 32];
+        shake128(b"abc", &mut abc);
+        assert_eq!(
+            abc[..],
+            hex("5881092dd818bf5cf8a3ddb793fbcba74097d5c526a6d35f97b83351940f2cc8")[..]
+        );
+    }
+
+    #[test]
+    fn shake256_known_answers() {
+        let mut empty = [0u8; 32];
+        shake256(b"", &mut empty);
+        assert_eq!(
+            empty[..],
+            hex("46b9dd2b0ba88d13233b3feb743eeb243fcd52ea62b81b82b50c27646ed5762f")[..]
+        );
+
+        let mut abc = [0u8; 32];
+        shake256(b"abc", &mut abc);
+        assert_eq!(
+            abc[..],
+            hex("483366601360a8771c6863080cc4114d8db44530f8f1e1ee4f94ea37e78b5739")[..]
+        );
+    }
+
+    // FIPS 202 domain separation makes SHA3-256 differ from the Keccak padding Ethereum uses.
+    #[test]
+    fn sha3_256_differs_from_keccak256() {
+        let fips = sha3_256(b"");
+        assert_eq!(
+            fips[..],
+            hex("a7ffc6f8bf1ed76651c14756a061d662f580ff4de43b49fa82d80a4b80f8434a")[..]
+        );
+        assert_ne!(
+            fips[..],
+            hex("c5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470")[..]
+        );
+    }
+}
