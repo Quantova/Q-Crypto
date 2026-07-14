@@ -1,7 +1,5 @@
 //! SLH-DSA (FIPS 205) - stateless hash based signatures. Conservative signature option; backs the
 
-#![allow(dead_code)]
-
 use crate::sha3::shake256;
 
 // Parameter set SLH-DSA-SHAKE-192s (FIPS 205, Table 2).
@@ -404,4 +402,180 @@ fn fors_pk_from_sig(sig_fors: &[u8], md: &[u8], pk_seed: &[u8], adrs: &mut Adrs)
     pk_adrs.set_type_and_clear(FORS_ROOTS);
     pk_adrs.set_key_pair(adrs.key_pair());
     hash_n(pk_seed, &pk_adrs, &roots)
+}
+
+// A hypertree signature: one XMSS signature per layer, from the bottom up.
+fn ht_sign(
+    message: &[u8; N],
+    sk_seed: &[u8],
+    pk_seed: &[u8],
+    idx_tree: u64,
+    idx_leaf: u32,
+) -> Vec<u8> {
+    let mut adrs = Adrs::new();
+    adrs.set_layer(0);
+    adrs.set_tree(idx_tree);
+    let mut sig_layer = xmss_sign(message, sk_seed, idx_leaf, pk_seed, &mut adrs);
+    let mut sig_ht = sig_layer.clone();
+    let mut root = xmss_pk_from_sig(idx_leaf, &sig_layer, message, pk_seed, &mut adrs);
+    let mut tree = idx_tree;
+    for layer in 1..D {
+        let leaf = (tree & ((1u64 << HP) - 1)) as u32;
+        tree >>= HP;
+        adrs.set_layer(layer as u32);
+        adrs.set_tree(tree);
+        sig_layer = xmss_sign(&root, sk_seed, leaf, pk_seed, &mut adrs);
+        sig_ht.extend_from_slice(&sig_layer);
+        if layer < D - 1 {
+            root = xmss_pk_from_sig(leaf, &sig_layer, &root, pk_seed, &mut adrs);
+        }
+    }
+    sig_ht
+}
+
+// Verify a hypertree signature by climbing to the top root.
+fn ht_verify(
+    message: &[u8; N],
+    sig_ht: &[u8],
+    pk_seed: &[u8],
+    idx_tree: u64,
+    idx_leaf: u32,
+    pk_root: &[u8],
+) -> bool {
+    let mut adrs = Adrs::new();
+    adrs.set_layer(0);
+    adrs.set_tree(idx_tree);
+    let mut node = xmss_pk_from_sig(
+        idx_leaf,
+        &sig_ht[..XMSS_SIG_BYTES],
+        message,
+        pk_seed,
+        &mut adrs,
+    );
+    let mut tree = idx_tree;
+    for layer in 1..D {
+        let leaf = (tree & ((1u64 << HP) - 1)) as u32;
+        tree >>= HP;
+        adrs.set_layer(layer as u32);
+        adrs.set_tree(tree);
+        let slice = &sig_ht[layer * XMSS_SIG_BYTES..(layer + 1) * XMSS_SIG_BYTES];
+        node = xmss_pk_from_sig(leaf, slice, &node, pk_seed, &mut adrs);
+    }
+    node.as_slice() == pk_root
+}
+
+/// Generate a key pair from the three n-byte seeds SK.seed, SK.prf and PK.seed.
+pub fn keygen(
+    sk_seed: &[u8; N],
+    sk_prf: &[u8; N],
+    pk_seed: &[u8; N],
+) -> ([u8; SECRET_KEY_BYTES], [u8; PUBLIC_KEY_BYTES]) {
+    let mut adrs = Adrs::new();
+    adrs.set_layer((D - 1) as u32);
+    let pk_root = xmss_node(sk_seed, 0, HP as u32, pk_seed, &mut adrs);
+
+    let mut pk = [0u8; PUBLIC_KEY_BYTES];
+    pk[..N].copy_from_slice(pk_seed);
+    pk[N..].copy_from_slice(&pk_root);
+
+    let mut sk = [0u8; SECRET_KEY_BYTES];
+    sk[..N].copy_from_slice(sk_seed);
+    sk[N..2 * N].copy_from_slice(sk_prf);
+    sk[2 * N..3 * N].copy_from_slice(pk_seed);
+    sk[3 * N..].copy_from_slice(&pk_root);
+
+    (sk, pk)
+}
+
+/// Sign a message with the internal interface (FIPS 205 slh_sign_internal).
+pub fn sign_internal(
+    sk: &[u8; SECRET_KEY_BYTES],
+    message: &[u8],
+    addrnd: &[u8; N],
+) -> [u8; SIGNATURE_BYTES] {
+    let sk_seed = &sk[..N];
+    let sk_prf = &sk[N..2 * N];
+    let pk_seed = &sk[2 * N..3 * N];
+    let pk_root = &sk[3 * N..];
+
+    let r = prf_msg(sk_prf, addrnd, message);
+    let digest = h_msg(&r, pk_seed, pk_root, message);
+    let md = &digest[..MD_BYTES];
+    let tmp_tree = &digest[MD_BYTES..MD_BYTES + TREE_BYTES];
+    let tmp_leaf = &digest[MD_BYTES + TREE_BYTES..];
+    let idx_tree = to_int(tmp_tree) & ((1u64 << (H - HP)) - 1);
+    let idx_leaf = (to_int(tmp_leaf) & ((1u64 << HP) - 1)) as u32;
+
+    let mut adrs = Adrs::new();
+    adrs.set_tree(idx_tree);
+    adrs.set_type_and_clear(FORS_TREE);
+    adrs.set_key_pair(idx_leaf);
+    let sig_fors = fors_sign(md, sk_seed, pk_seed, &mut adrs);
+    let pk_fors = fors_pk_from_sig(&sig_fors, md, pk_seed, &mut adrs);
+    let sig_ht = ht_sign(&pk_fors, sk_seed, pk_seed, idx_tree, idx_leaf);
+
+    let mut sig = [0u8; SIGNATURE_BYTES];
+    sig[..N].copy_from_slice(&r);
+    sig[N..N + FORS_SIG_BYTES].copy_from_slice(&sig_fors);
+    sig[N + FORS_SIG_BYTES..].copy_from_slice(&sig_ht);
+    sig
+}
+
+/// Verify a signature with the internal interface (FIPS 205 slh_verify_internal).
+pub fn verify_internal(pk: &[u8; PUBLIC_KEY_BYTES], message: &[u8], sig: &[u8]) -> bool {
+    if sig.len() != SIGNATURE_BYTES {
+        return false;
+    }
+    let pk_seed = &pk[..N];
+    let pk_root = &pk[N..];
+
+    let r = &sig[..N];
+    let sig_fors = &sig[N..N + FORS_SIG_BYTES];
+    let sig_ht = &sig[N + FORS_SIG_BYTES..];
+
+    let digest = h_msg(r, pk_seed, pk_root, message);
+    let md = &digest[..MD_BYTES];
+    let tmp_tree = &digest[MD_BYTES..MD_BYTES + TREE_BYTES];
+    let tmp_leaf = &digest[MD_BYTES + TREE_BYTES..];
+    let idx_tree = to_int(tmp_tree) & ((1u64 << (H - HP)) - 1);
+    let idx_leaf = (to_int(tmp_leaf) & ((1u64 << HP) - 1)) as u32;
+
+    let mut adrs = Adrs::new();
+    adrs.set_tree(idx_tree);
+    adrs.set_type_and_clear(FORS_TREE);
+    adrs.set_key_pair(idx_leaf);
+    let pk_fors = fors_pk_from_sig(sig_fors, md, pk_seed, &mut adrs);
+    ht_verify(&pk_fors, sig_ht, pk_seed, idx_tree, idx_leaf, pk_root)
+}
+
+// Prepend the pure-signature domain separator and context (FIPS 205 sections 10.2, 10.3).
+fn with_context(context: &[u8], message: &[u8]) -> Option<Vec<u8>> {
+    if context.len() > 255 {
+        return None;
+    }
+    let mut framed = Vec::with_capacity(2 + context.len() + message.len());
+    framed.push(0u8);
+    framed.push(context.len() as u8);
+    framed.extend_from_slice(context);
+    framed.extend_from_slice(message);
+    Some(framed)
+}
+
+/// Sign a message and context with the external (pure) interface.
+pub fn sign(
+    sk: &[u8; SECRET_KEY_BYTES],
+    message: &[u8],
+    context: &[u8],
+    addrnd: &[u8; N],
+) -> Option<[u8; SIGNATURE_BYTES]> {
+    let framed = with_context(context, message)?;
+    Some(sign_internal(sk, &framed, addrnd))
+}
+
+/// Verify a signature over a message and context with the external (pure) interface.
+pub fn verify(pk: &[u8; PUBLIC_KEY_BYTES], message: &[u8], sig: &[u8], context: &[u8]) -> bool {
+    match with_context(context, message) {
+        Some(framed) => verify_internal(pk, &framed, sig),
+        None => false,
+    }
 }
