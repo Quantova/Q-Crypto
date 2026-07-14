@@ -15,3 +15,8 @@ fn-dsa = []
 [dependencies]
 
 [dev-dependencies]
+
+[[bench]]
+name = "throughput"
+path = "benches/throughput.rs"
+harness = false
