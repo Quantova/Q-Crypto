@@ -6,7 +6,9 @@
 //! and validated against the official known-answer tests.
 //!
 //! Implementation order (each gates the next): sha3, then ml_dsa, then ml_kem, then slh_dsa, then
-//! vrf. The symmetric AEAD in chacha20poly1305 stands alone and depends on nothing else here.
+//! the two VRF constructions. `vrf` is the hash-based VRF on slh_dsa and `vrf_mldsa` is the
+//! lattice-based VRF on ml_dsa; both are kept. The symmetric AEAD in chacha20poly1305 stands alone
+//! and depends on nothing else here.
 
 #![forbid(unsafe_op_in_unsafe_fn)]
 
@@ -16,6 +18,7 @@ pub mod ml_kem;
 pub mod sha3;
 pub mod slh_dsa;
 pub mod vrf;
+pub mod vrf_mldsa;
 
 #[cfg(feature = "fn-dsa")]
 pub mod fn_dsa;
