@@ -1,13 +1,16 @@
 //! qtv-crypto - the single source of cryptography in the Quantova organization.
 //!
-//! Only the NIST post-quantum algorithms named in POLICY-crypto.md exist here. No classical
-//! cryptography is representable. Every primitive is implemented from its FIPS specification and
-//! validated against the NIST known-answer tests in `vectors/`.
+//! The cryptography POLICY-crypto.md permits and nothing else: the NIST post-quantum algorithms and
+//! the single 256-bit symmetric AEAD the policy allows, ChaCha20-Poly1305 (RFC 8439). No classical
+//! public-key cryptography is representable. Every primitive is implemented from its specification
+//! and validated against the official known-answer tests.
 //!
-//! Implementation order (each gates the next): sha3, then ml_dsa, then ml_kem, then slh_dsa, then vrf.
+//! Implementation order (each gates the next): sha3, then ml_dsa, then ml_kem, then slh_dsa, then
+//! vrf. The symmetric AEAD in chacha20poly1305 stands alone and depends on nothing else here.
 
 #![forbid(unsafe_op_in_unsafe_fn)]
 
+pub mod chacha20poly1305;
 pub mod ml_dsa;
 pub mod ml_kem;
 pub mod sha3;
