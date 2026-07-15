@@ -8,6 +8,7 @@ pub mod ml_kem;
 pub mod sha3;
 pub mod slh_dsa;
 pub mod vrf;
+pub mod vrf_mldsa;
 
 #[cfg(feature = "fn-dsa")]
 pub mod fn_dsa;
