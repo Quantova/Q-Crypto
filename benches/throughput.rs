@@ -8,7 +8,7 @@
 use std::hint::black_box;
 use std::time::{Duration, Instant};
 
-use qtv_crypto::{ml_dsa, ml_kem, sha3, slh_dsa, vrf};
+use qtv_crypto::{chacha20poly1305, ml_dsa, ml_kem, sha3, slh_dsa, vrf};
 
 fn report(name: &str, iters: u32, elapsed: Duration) {
     let seconds = elapsed.as_secs_f64();
@@ -152,5 +152,39 @@ fn main() {
             black_box(vrf::verify(&vrf_pk, &vrf_input, &vrf_out, &vrf_proof));
         }
         report("vrf_verify", iters, start.elapsed());
+    }
+
+    // chacha20poly1305 seal and open on a one kilobyte payload.
+    let aead_key = [0xddu8; 32];
+    let aead_nonce = [0xeeu8; 12];
+    let aead_aad = [0x01u8; 16];
+    let aead_pt = [0x5au8; 1024];
+    {
+        let iters = 100_000u32;
+        let start = Instant::now();
+        for _ in 0..iters {
+            black_box(chacha20poly1305::seal(
+                &aead_key,
+                &aead_nonce,
+                &aead_aad,
+                &aead_pt,
+            ));
+        }
+        report("chacha20_seal", iters, start.elapsed());
+    }
+    let (aead_ct, aead_tag) = chacha20poly1305::seal(&aead_key, &aead_nonce, &aead_aad, &aead_pt);
+    {
+        let iters = 100_000u32;
+        let start = Instant::now();
+        for _ in 0..iters {
+            black_box(chacha20poly1305::open(
+                &aead_key,
+                &aead_nonce,
+                &aead_aad,
+                &aead_ct,
+                &aead_tag,
+            ));
+        }
+        report("chacha20_open", iters, start.elapsed());
     }
 }
