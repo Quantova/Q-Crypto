@@ -201,6 +201,74 @@ pub fn poly1305(key: &[u8; 32], message: &[u8]) -> [u8; TAG_BYTES] {
     tag
 }
 
+// Derive the Poly1305 one-time key for a message: the first 32 bytes of the ChaCha20 block under
+// counter zero, keyed by the AEAD key and nonce (RFC 8439 section 2.6).
+fn poly1305_key_gen(key: &[u8; KEY_BYTES], nonce: &[u8; NONCE_BYTES]) -> [u8; 32] {
+    let block = chacha20_block(key, 0, nonce);
+    let mut otk = [0u8; 32];
+    otk.copy_from_slice(&block[..32]);
+    otk
+}
+
+// Bytes of zero padding needed to reach the next 16-byte boundary.
+fn pad16(len: usize) -> usize {
+    (16 - len % 16) % 16
+}
+
+// The Poly1305 input for the AEAD: the associated data and ciphertext each padded to a 16-byte
+// boundary, followed by their lengths as little-endian 64-bit words (RFC 8439 section 2.8).
+fn mac_data(aad: &[u8], ciphertext: &[u8]) -> Vec<u8> {
+    let mut data = Vec::with_capacity(aad.len() + ciphertext.len() + 48);
+    data.extend_from_slice(aad);
+    data.resize(data.len() + pad16(aad.len()), 0);
+    data.extend_from_slice(ciphertext);
+    data.resize(data.len() + pad16(ciphertext.len()), 0);
+    data.extend_from_slice(&(aad.len() as u64).to_le_bytes());
+    data.extend_from_slice(&(ciphertext.len() as u64).to_le_bytes());
+    data
+}
+
+// Compare two tags without a data-dependent branch or early exit.
+fn constant_time_eq(a: &[u8; TAG_BYTES], b: &[u8; TAG_BYTES]) -> bool {
+    let mut diff = 0u8;
+    for (x, y) in a.iter().zip(b.iter()) {
+        diff |= x ^ y;
+    }
+    diff == 0
+}
+
+/// Seal `plaintext` under `key` and `nonce` with `aad` authenticated but not encrypted (RFC 8439
+pub fn seal(
+    key: &[u8; KEY_BYTES],
+    nonce: &[u8; NONCE_BYTES],
+    aad: &[u8],
+    plaintext: &[u8],
+) -> (Vec<u8>, [u8; TAG_BYTES]) {
+    let otk = poly1305_key_gen(key, nonce);
+    let mut ciphertext = plaintext.to_vec();
+    chacha20(key, 1, nonce, &mut ciphertext);
+    let tag = poly1305(&otk, &mac_data(aad, &ciphertext));
+    (ciphertext, tag)
+}
+
+/// Open a sealed message: recompute the tag over `aad` and `ciphertext`, compare it against `tag` in
+pub fn open(
+    key: &[u8; KEY_BYTES],
+    nonce: &[u8; NONCE_BYTES],
+    aad: &[u8],
+    ciphertext: &[u8],
+    tag: &[u8; TAG_BYTES],
+) -> Option<Vec<u8>> {
+    let otk = poly1305_key_gen(key, nonce);
+    let expected = poly1305(&otk, &mac_data(aad, ciphertext));
+    if !constant_time_eq(&expected, tag) {
+        return None;
+    }
+    let mut plaintext = ciphertext.to_vec();
+    chacha20(key, 1, nonce, &mut plaintext);
+    Some(plaintext)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -269,5 +337,78 @@ mod tests {
         let message = b"Cryptographic Forum Research Group";
         let tag = poly1305(&key, message);
         assert_eq!(tag[..], hex("a8061dc1305136c6c22b8baf0c0127a9")[..]);
+    }
+
+    // The key 80, 81, .., 9f used by the RFC 8439 AEAD vectors.
+    fn high_key() -> [u8; KEY_BYTES] {
+        let mut key = [0u8; KEY_BYTES];
+        for (i, b) in key.iter_mut().enumerate() {
+            *b = 0x80 + i as u8;
+        }
+        key
+    }
+
+    #[test]
+    fn poly1305_key_generation_vector() {
+        // RFC 8439 section 2.6.2.
+        let key = high_key();
+        let nonce: [u8; NONCE_BYTES] = hex("000000000001020304050607").try_into().unwrap();
+        assert_eq!(
+            poly1305_key_gen(&key, &nonce)[..],
+            hex("8ad5a08b905f81cc815040274ab29471a833b637e3fd0da508dbb8e2fdd1a646")[..]
+        );
+    }
+
+    // The complete AEAD example from RFC 8439 section 2.8.2.
+    fn aead_vector() -> (
+        [u8; KEY_BYTES],
+        [u8; NONCE_BYTES],
+        Vec<u8>,
+        Vec<u8>,
+        Vec<u8>,
+        Vec<u8>,
+    ) {
+        let key = high_key();
+        let nonce: [u8; NONCE_BYTES] = hex("070000004041424344454647").try_into().unwrap();
+        let aad = hex("50515253c0c1c2c3c4c5c6c7");
+        let plaintext = b"Ladies and Gentlemen of the class of '99: If I could offer \
+                          you only one tip for the future, sunscreen would be it."
+            .to_vec();
+        let ciphertext = hex(
+            "d31a8d34648e60db7b86afbc53ef7ec2a4aded51296e08fea9e2b5a736ee62d6\
+             3dbea45e8ca9671282fafb69da92728b1a71de0a9e060b2905d6a5b67ecd3b36\
+             92ddbd7f2d778b8c9803aee328091b58fab324e4fad675945585808b4831d7bc\
+             3ff4def08e4b7a9de576d26586cec64b6116",
+        );
+        let tag = hex("1ae10b594f09e26a7e902ecbd0600691");
+        (key, nonce, aad, plaintext, ciphertext, tag)
+    }
+
+    #[test]
+    fn aead_seal_vector() {
+        // RFC 8439 section 2.8.2.
+        let (key, nonce, aad, plaintext, ciphertext, tag) = aead_vector();
+        let (out, out_tag) = seal(&key, &nonce, &aad, &plaintext);
+        assert_eq!(out[..], ciphertext[..]);
+        assert_eq!(out_tag[..], tag[..]);
+    }
+
+    #[test]
+    fn aead_open_vector() {
+        let (key, nonce, aad, plaintext, ciphertext, tag) = aead_vector();
+        let tag: [u8; TAG_BYTES] = tag.try_into().unwrap();
+        let opened = open(&key, &nonce, &aad, &ciphertext, &tag);
+        assert_eq!(opened.as_deref(), Some(&plaintext[..]));
+    }
+
+    #[test]
+    fn seal_then_open_round_trips() {
+        let key = high_key();
+        let nonce: [u8; NONCE_BYTES] = hex("000102030405060708090a0b").try_into().unwrap();
+        let aad = b"quantova transport header";
+        let plaintext = b"authenticated payload of arbitrary length";
+        let (ciphertext, tag) = seal(&key, &nonce, aad, plaintext);
+        let opened = open(&key, &nonce, aad, &ciphertext, &tag);
+        assert_eq!(opened.as_deref(), Some(&plaintext[..]));
     }
 }
