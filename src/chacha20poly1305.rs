@@ -10,6 +10,8 @@
 pub const KEY_BYTES: usize = 32;
 /// Nonce length in bytes.
 pub const NONCE_BYTES: usize = 12;
+/// Authentication tag length in bytes.
+pub const TAG_BYTES: usize = 16;
 
 // The four ChaCha20 constant words: the ASCII of "expand 32-byte k" read little-endian.
 const CONSTANTS: [u32; 4] = [0x6170_7865, 0x3320_646e, 0x7962_2d32, 0x6b20_6574];
@@ -75,6 +77,139 @@ pub fn chacha20(key: &[u8; KEY_BYTES], counter: u32, nonce: &[u8; NONCE_BYTES], 
     }
 }
 
+// Add one 16-byte message block into the Poly1305 accumulator `h` and multiply by the clamped key
+// `r` modulo 2^130 - 5, working in five 26-bit limbs. `hibit` is 2^128 for a full block and zero for
+// the final padded block, whose 0x01 terminator is already present in `block`. `s` holds r[1..5]*5.
+fn poly1305_block(h: &mut [u64; 5], block: &[u8], hibit: u64, r: &[u64; 5], s: &[u64; 4]) {
+    let t0 = load_u32(&block[0..]) as u64;
+    let t1 = load_u32(&block[4..]) as u64;
+    let t2 = load_u32(&block[8..]) as u64;
+    let t3 = load_u32(&block[12..]) as u64;
+
+    h[0] += t0 & 0x03ff_ffff;
+    h[1] += ((t0 >> 26) | (t1 << 6)) & 0x03ff_ffff;
+    h[2] += ((t1 >> 20) | (t2 << 12)) & 0x03ff_ffff;
+    h[3] += ((t2 >> 14) | (t3 << 18)) & 0x03ff_ffff;
+    h[4] += (t3 >> 8) | hibit;
+
+    let d0 = h[0] * r[0] + h[1] * s[3] + h[2] * s[2] + h[3] * s[1] + h[4] * s[0];
+    let d1 = h[0] * r[1] + h[1] * r[0] + h[2] * s[3] + h[3] * s[2] + h[4] * s[1];
+    let d2 = h[0] * r[2] + h[1] * r[1] + h[2] * r[0] + h[3] * s[3] + h[4] * s[2];
+    let d3 = h[0] * r[3] + h[1] * r[2] + h[2] * r[1] + h[3] * r[0] + h[4] * s[3];
+    let d4 = h[0] * r[4] + h[1] * r[3] + h[2] * r[2] + h[3] * r[1] + h[4] * r[0];
+
+    let mut c = d0 >> 26;
+    h[0] = d0 & 0x03ff_ffff;
+    let d1 = d1 + c;
+    c = d1 >> 26;
+    h[1] = d1 & 0x03ff_ffff;
+    let d2 = d2 + c;
+    c = d2 >> 26;
+    h[2] = d2 & 0x03ff_ffff;
+    let d3 = d3 + c;
+    c = d3 >> 26;
+    h[3] = d3 & 0x03ff_ffff;
+    let d4 = d4 + c;
+    c = d4 >> 26;
+    h[4] = d4 & 0x03ff_ffff;
+    h[0] += c * 5;
+    c = h[0] >> 26;
+    h[0] &= 0x03ff_ffff;
+    h[1] += c;
+}
+
+/// Poly1305 (RFC 8439): a one-time authenticator producing a 16-byte tag over `message` under the
+/// 32-byte one-time `key` (the clamped multiplier r followed by the addend s). The key is derived
+/// from a fresh nonce for every message and must never be reused across two messages.
+pub fn poly1305(key: &[u8; 32], message: &[u8]) -> [u8; TAG_BYTES] {
+    let r0 = (load_u32(&key[0..]) & 0x03ff_ffff) as u64;
+    let r1 = ((load_u32(&key[3..]) >> 2) & 0x03ff_ff03) as u64;
+    let r2 = ((load_u32(&key[6..]) >> 4) & 0x03ff_c0ff) as u64;
+    let r3 = ((load_u32(&key[9..]) >> 6) & 0x03f0_3fff) as u64;
+    let r4 = ((load_u32(&key[12..]) >> 8) & 0x000f_ffff) as u64;
+    let r = [r0, r1, r2, r3, r4];
+    let s = [r1 * 5, r2 * 5, r3 * 5, r4 * 5];
+
+    let mut h = [0u64; 5];
+    let mut blocks = message.chunks_exact(16);
+    for block in blocks.by_ref() {
+        poly1305_block(&mut h, block, 1 << 24, &r, &s);
+    }
+    let rem = blocks.remainder();
+    if !rem.is_empty() {
+        let mut last = [0u8; 16];
+        last[..rem.len()].copy_from_slice(rem);
+        last[rem.len()] = 1;
+        poly1305_block(&mut h, &last, 0, &r, &s);
+    }
+
+    // Fully carry h so every limb is reduced to 26 bits.
+    let mut c = h[1] >> 26;
+    h[1] &= 0x03ff_ffff;
+    h[2] += c;
+    c = h[2] >> 26;
+    h[2] &= 0x03ff_ffff;
+    h[3] += c;
+    c = h[3] >> 26;
+    h[3] &= 0x03ff_ffff;
+    h[4] += c;
+    c = h[4] >> 26;
+    h[4] &= 0x03ff_ffff;
+    h[0] += c * 5;
+    c = h[0] >> 26;
+    h[0] &= 0x03ff_ffff;
+    h[1] += c;
+
+    // Compute g = h - (2^130 - 5). The top limb borrows when h < 2^130 - 5.
+    let mut g = [0u64; 5];
+    g[0] = h[0] + 5;
+    c = g[0] >> 26;
+    g[0] &= 0x03ff_ffff;
+    g[1] = h[1] + c;
+    c = g[1] >> 26;
+    g[1] &= 0x03ff_ffff;
+    g[2] = h[2] + c;
+    c = g[2] >> 26;
+    g[2] &= 0x03ff_ffff;
+    g[3] = h[3] + c;
+    c = g[3] >> 26;
+    g[3] &= 0x03ff_ffff;
+    g[4] = (h[4] + c).wrapping_sub(1 << 26);
+
+    // Select g when h >= 2^130 - 5 (no borrow), else keep h, without branching on the data.
+    let mask = (g[4] >> 63).wrapping_sub(1);
+    for gi in g.iter_mut() {
+        *gi &= mask;
+    }
+    let keep = !mask;
+    for (hi, gi) in h.iter_mut().zip(g.iter()) {
+        *hi = (*hi & keep) | *gi;
+    }
+
+    // Serialize the 130-bit residue into four 32-bit words.
+    h[0] = (h[0] | (h[1] << 26)) & 0xffff_ffff;
+    h[1] = ((h[1] >> 6) | (h[2] << 20)) & 0xffff_ffff;
+    h[2] = ((h[2] >> 12) | (h[3] << 14)) & 0xffff_ffff;
+    h[3] = ((h[3] >> 18) | (h[4] << 8)) & 0xffff_ffff;
+
+    // Add s modulo 2^128 and emit the tag little-endian.
+    let mut f = h[0] + load_u32(&key[16..]) as u64;
+    h[0] = f & 0xffff_ffff;
+    f = h[1] + load_u32(&key[20..]) as u64 + (f >> 32);
+    h[1] = f & 0xffff_ffff;
+    f = h[2] + load_u32(&key[24..]) as u64 + (f >> 32);
+    h[2] = f & 0xffff_ffff;
+    f = h[3] + load_u32(&key[28..]) as u64 + (f >> 32);
+    h[3] = f & 0xffff_ffff;
+
+    let mut tag = [0u8; TAG_BYTES];
+    tag[0..4].copy_from_slice(&(h[0] as u32).to_le_bytes());
+    tag[4..8].copy_from_slice(&(h[1] as u32).to_le_bytes());
+    tag[8..12].copy_from_slice(&(h[2] as u32).to_le_bytes());
+    tag[12..16].copy_from_slice(&(h[3] as u32).to_le_bytes());
+    tag
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -132,5 +267,16 @@ mod tests {
         // ChaCha20 is its own inverse, so a second pass restores the plaintext.
         chacha20(&key, 1, &nonce, &mut buf);
         assert_eq!(&buf[..], &plaintext[..]);
+    }
+
+    #[test]
+    fn poly1305_authenticator_vector() {
+        // RFC 8439 section 2.5.2.
+        let key: [u8; 32] = hex("85d6be7857556d337f4452fe42d506a80103808afb0db2fd4abff6af4149f51b")
+            .try_into()
+            .unwrap();
+        let message = b"Cryptographic Forum Research Group";
+        let tag = poly1305(&key, message);
+        assert_eq!(tag[..], hex("a8061dc1305136c6c22b8baf0c0127a9")[..]);
     }
 }
