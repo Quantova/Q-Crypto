@@ -360,45 +360,47 @@ mod tests {
     }
 
     // The complete AEAD example from RFC 8439 section 2.8.2.
-    fn aead_vector() -> (
-        [u8; KEY_BYTES],
-        [u8; NONCE_BYTES],
-        Vec<u8>,
-        Vec<u8>,
-        Vec<u8>,
-        Vec<u8>,
-    ) {
-        let key = high_key();
-        let nonce: [u8; NONCE_BYTES] = hex("070000004041424344454647").try_into().unwrap();
-        let aad = hex("50515253c0c1c2c3c4c5c6c7");
-        let plaintext = b"Ladies and Gentlemen of the class of '99: If I could offer \
-                          you only one tip for the future, sunscreen would be it."
-            .to_vec();
-        let ciphertext = hex(
-            "d31a8d34648e60db7b86afbc53ef7ec2a4aded51296e08fea9e2b5a736ee62d6\
-             3dbea45e8ca9671282fafb69da92728b1a71de0a9e060b2905d6a5b67ecd3b36\
-             92ddbd7f2d778b8c9803aee328091b58fab324e4fad675945585808b4831d7bc\
-             3ff4def08e4b7a9de576d26586cec64b6116",
-        );
-        let tag = hex("1ae10b594f09e26a7e902ecbd0600691");
-        (key, nonce, aad, plaintext, ciphertext, tag)
+    struct Example {
+        key: [u8; KEY_BYTES],
+        nonce: [u8; NONCE_BYTES],
+        aad: Vec<u8>,
+        plaintext: Vec<u8>,
+        ciphertext: Vec<u8>,
+        tag: [u8; TAG_BYTES],
+    }
+
+    fn aead_vector() -> Example {
+        Example {
+            key: high_key(),
+            nonce: hex("070000004041424344454647").try_into().unwrap(),
+            aad: hex("50515253c0c1c2c3c4c5c6c7"),
+            plaintext: b"Ladies and Gentlemen of the class of '99: If I could offer \
+                         you only one tip for the future, sunscreen would be it."
+                .to_vec(),
+            ciphertext: hex(
+                "d31a8d34648e60db7b86afbc53ef7ec2a4aded51296e08fea9e2b5a736ee62d6\
+                 3dbea45e8ca9671282fafb69da92728b1a71de0a9e060b2905d6a5b67ecd3b36\
+                 92ddbd7f2d778b8c9803aee328091b58fab324e4fad675945585808b4831d7bc\
+                 3ff4def08e4b7a9de576d26586cec64b6116",
+            ),
+            tag: hex("1ae10b594f09e26a7e902ecbd0600691").try_into().unwrap(),
+        }
     }
 
     #[test]
     fn aead_seal_vector() {
         // RFC 8439 section 2.8.2.
-        let (key, nonce, aad, plaintext, ciphertext, tag) = aead_vector();
-        let (out, out_tag) = seal(&key, &nonce, &aad, &plaintext);
-        assert_eq!(out[..], ciphertext[..]);
-        assert_eq!(out_tag[..], tag[..]);
+        let v = aead_vector();
+        let (ciphertext, tag) = seal(&v.key, &v.nonce, &v.aad, &v.plaintext);
+        assert_eq!(ciphertext[..], v.ciphertext[..]);
+        assert_eq!(tag[..], v.tag[..]);
     }
 
     #[test]
     fn aead_open_vector() {
-        let (key, nonce, aad, plaintext, ciphertext, tag) = aead_vector();
-        let tag: [u8; TAG_BYTES] = tag.try_into().unwrap();
-        let opened = open(&key, &nonce, &aad, &ciphertext, &tag);
-        assert_eq!(opened.as_deref(), Some(&plaintext[..]));
+        let v = aead_vector();
+        let opened = open(&v.key, &v.nonce, &v.aad, &v.ciphertext, &v.tag);
+        assert_eq!(opened.as_deref(), Some(&v.plaintext[..]));
     }
 
     #[test]
@@ -410,5 +412,37 @@ mod tests {
         let (ciphertext, tag) = seal(&key, &nonce, aad, plaintext);
         let opened = open(&key, &nonce, aad, &ciphertext, &tag);
         assert_eq!(opened.as_deref(), Some(&plaintext[..]));
+    }
+
+    #[test]
+    fn open_rejects_tampered_ciphertext() {
+        let v = aead_vector();
+        let mut forged = v.ciphertext.clone();
+        forged[0] ^= 1;
+        assert!(open(&v.key, &v.nonce, &v.aad, &forged, &v.tag).is_none());
+    }
+
+    #[test]
+    fn open_rejects_tampered_tag() {
+        let v = aead_vector();
+        let mut tag = v.tag;
+        tag[TAG_BYTES - 1] ^= 0x80;
+        assert!(open(&v.key, &v.nonce, &v.aad, &v.ciphertext, &tag).is_none());
+    }
+
+    #[test]
+    fn open_rejects_wrong_nonce() {
+        let v = aead_vector();
+        let mut nonce = v.nonce;
+        nonce[0] ^= 1;
+        assert!(open(&v.key, &nonce, &v.aad, &v.ciphertext, &v.tag).is_none());
+    }
+
+    #[test]
+    fn open_rejects_wrong_key() {
+        let v = aead_vector();
+        let mut key = v.key;
+        key[0] ^= 1;
+        assert!(open(&key, &v.nonce, &v.aad, &v.ciphertext, &v.tag).is_none());
     }
 }
