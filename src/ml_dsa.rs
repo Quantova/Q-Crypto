@@ -272,7 +272,7 @@ fn pack_bits(coeffs: &Poly, bits: usize, out: &mut Vec<u8>) {
         acc |= (c as u64 & mask) << acc_bits;
         acc_bits += bits;
         while acc_bits >= 8 {
-            out.push((acc & 0xff) as u8);
+            out.push((acc & 255) as u8);
             acc >>= 8;
             acc_bits -= 8;
         }
@@ -312,7 +312,7 @@ fn rej_ntt_poly(seed: &[u8]) -> Poly {
         while ctr < N && pos + 3 <= buf.len() {
             let b0 = buf[pos] as i32;
             let b1 = buf[pos + 1] as i32;
-            let b2 = (buf[pos + 2] & 0x7f) as i32;
+            let b2 = (buf[pos + 2] & 127) as i32;
             pos += 3;
             let z = b0 | (b1 << 8) | (b2 << 16);
             if z < Q {
@@ -347,7 +347,7 @@ fn rej_bounded_poly(seed: &[u8]) -> Poly {
         while ctr < N && pos < buf.len() {
             let b = buf[pos];
             pos += 1;
-            if let Some(v) = coeff_from_half_byte(b & 0x0f) {
+            if let Some(v) = coeff_from_half_byte(b & 15) {
                 a[ctr] = v;
                 ctr += 1;
             }
@@ -388,13 +388,13 @@ fn expand_s(rho_prime: &[u8]) -> (Vec<Poly>, Vec<Poly>) {
     seed[..64].copy_from_slice(rho_prime);
     for i in 0..L {
         let idx = i as u16;
-        seed[64] = (idx & 0xff) as u8;
+        seed[64] = (idx & 255) as u8;
         seed[65] = (idx >> 8) as u8;
         s1[i] = rej_bounded_poly(&seed);
     }
     for i in 0..K {
         let idx = (i + L) as u16;
-        seed[64] = (idx & 0xff) as u8;
+        seed[64] = (idx & 255) as u8;
         seed[65] = (idx >> 8) as u8;
         s2[i] = rej_bounded_poly(&seed);
     }
@@ -408,7 +408,7 @@ fn expand_mask(rho_pp: &[u8], kappa: usize) -> Vec<Poly> {
     seed[..64].copy_from_slice(rho_pp);
     for r in 0..L {
         let idx = (kappa + r) as u16;
-        seed[64] = (idx & 0xff) as u8;
+        seed[64] = (idx & 255) as u8;
         seed[65] = (idx >> 8) as u8;
         let v = shake256_bytes(&seed, 32 * 20);
         let raw = unpack_bits(&v, 20);
@@ -922,13 +922,13 @@ fn verify_with_mu(pk: &PublicKey, mu: &[u8], sig: &Signature) -> bool {
     c_tilde == decoded.c_tilde
 }
 
-// Format the external message representative M' = 0x00 || len(ctx) || ctx || message (pure variant).
+// Format the external message representative M' = 0 || len(ctx) || ctx || message (pure variant).
 fn format_message(context: &[u8], message: &[u8]) -> Option<Vec<u8>> {
     if context.len() > 255 {
         return None;
     }
     let mut m = Vec::with_capacity(2 + context.len() + message.len());
-    m.push(0x00);
+    m.push(0);
     m.push(context.len() as u8);
     m.extend_from_slice(context);
     m.extend_from_slice(message);

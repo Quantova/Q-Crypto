@@ -212,7 +212,7 @@ fn pack_bits(coeffs: &Poly, bits: usize, out: &mut Vec<u8>) {
         acc |= (c as u64 & mask) << acc_bits;
         acc_bits += bits;
         while acc_bits >= 8 {
-            out.push((acc & 0xff) as u8);
+            out.push((acc & 255) as u8);
             acc >>= 8;
             acc_bits -= 8;
         }
@@ -262,7 +262,7 @@ fn sample_ntt(seed: &[u8]) -> Poly {
         let mut ctr = 0usize;
         let mut pos = 0usize;
         while ctr < N && pos + 3 <= buf.len() {
-            let d1 = buf[pos] as i32 + 256 * ((buf[pos + 1] & 0x0f) as i32);
+            let d1 = buf[pos] as i32 + 256 * ((buf[pos + 1] & 15) as i32);
             let d2 = (buf[pos + 1] >> 4) as i32 + 16 * (buf[pos + 2] as i32);
             pos += 3;
             if d1 < Q {
@@ -490,7 +490,7 @@ fn kpke_decrypt(dk: &[u8], c: &[u8]) -> Vec<u8> {
     out
 }
 
-// Constant-time equality mask: 0xff when the slices are equal, 0x00 otherwise.
+// Constant-time equality mask: 255 when the slices are equal, 0 otherwise.
 fn ct_eq(a: &[u8], b: &[u8]) -> u8 {
     let mut diff = 0u8;
     for i in 0..a.len() {

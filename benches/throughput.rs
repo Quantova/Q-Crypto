@@ -20,7 +20,7 @@ fn report(name: &str, iters: u32, elapsed: Duration) {
 fn main() {
     // sha3_256 on a one kilobyte input.
     {
-        let input = [0x5au8; 1024];
+        let input = [90u8; 1024];
         let iters = 200_000u32;
         let start = Instant::now();
         for _ in 0..iters {
@@ -30,7 +30,7 @@ fn main() {
     }
 
     // ml_dsa keygen, sign, and verify.
-    let mldsa_seed = [0x11u8; 32];
+    let mldsa_seed = [17u8; 32];
     {
         let iters = 2_000u32;
         let start = Instant::now();
@@ -40,9 +40,9 @@ fn main() {
         report("ml_dsa_keygen", iters, start.elapsed());
     }
     let (mldsa_pk, mldsa_sk) = ml_dsa::keygen(&mldsa_seed);
-    let mldsa_msg = [0x22u8; 64];
+    let mldsa_msg = [34u8; 64];
     let mldsa_ctx: [u8; 0] = [];
-    let mldsa_rnd = [0x33u8; 32];
+    let mldsa_rnd = [51u8; 32];
     {
         let iters = 1_000u32;
         let start = Instant::now();
@@ -63,8 +63,8 @@ fn main() {
     }
 
     // ml_kem keygen, encaps, and decaps.
-    let kem_d = [0x44u8; 32];
-    let kem_z = [0x55u8; 32];
+    let kem_d = [68u8; 32];
+    let kem_z = [85u8; 32];
     {
         let iters = 10_000u32;
         let start = Instant::now();
@@ -74,7 +74,7 @@ fn main() {
         report("ml_kem_keygen", iters, start.elapsed());
     }
     let (kem_ek, kem_dk) = ml_kem::keygen(&kem_d, &kem_z);
-    let kem_m = [0x66u8; 32];
+    let kem_m = [102u8; 32];
     {
         let iters = 10_000u32;
         let start = Instant::now();
@@ -94,9 +94,9 @@ fn main() {
     }
 
     // slh_dsa keygen, sign, and verify. Signing is slow, so the iteration counts stay small.
-    let slh_sk_seed = [0x77u8; 24];
-    let slh_sk_prf = [0x88u8; 24];
-    let slh_pk_seed = [0x99u8; 24];
+    let slh_sk_seed = [119u8; 24];
+    let slh_sk_prf = [136u8; 24];
+    let slh_pk_seed = [153u8; 24];
     {
         let iters = 20u32;
         let start = Instant::now();
@@ -106,9 +106,9 @@ fn main() {
         report("slh_dsa_keygen", iters, start.elapsed());
     }
     let (slh_sk, slh_pk) = slh_dsa::keygen(&slh_sk_seed, &slh_sk_prf, &slh_pk_seed);
-    let slh_msg = [0xaau8; 64];
+    let slh_msg = [170u8; 64];
     let slh_ctx: [u8; 0] = [];
-    let slh_addrnd = [0xbbu8; 24];
+    let slh_addrnd = [187u8; 24];
     {
         let iters = 5u32;
         let start = Instant::now();
@@ -130,7 +130,7 @@ fn main() {
 
     // vrf prove and verify. The proof is a hash-based signature, so proving is slow.
     let (vrf_sk, vrf_pk) = vrf::keygen(b"quantova throughput benchmark seed");
-    let vrf_input = [0xccu8; 64];
+    let vrf_input = [204u8; 64];
     {
         let iters = 5u32;
         let start = Instant::now();
@@ -150,10 +150,10 @@ fn main() {
     }
 
     // chacha20poly1305 seal and open on a one kilobyte payload.
-    let aead_key = [0xddu8; 32];
-    let aead_nonce = [0xeeu8; 12];
-    let aead_aad = [0x01u8; 16];
-    let aead_pt = [0x5au8; 1024];
+    let aead_key = [221u8; 32];
+    let aead_nonce = [238u8; 12];
+    let aead_aad = [1u8; 16];
+    let aead_pt = [90u8; 1024];
     {
         let iters = 100_000u32;
         let start = Instant::now();
