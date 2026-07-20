@@ -991,6 +991,77 @@ mod tests {
             .collect()
     }
 
+    // Correctness gate for any optimisation of the transform, including the SIMD work. These pin the
+    // meaning of the transform rather than its exact intermediate values, so an implementation that
+    // changes representation (for example Montgomery form) still has to satisfy them. Together with the
+    // FIPS-204 known answer vectors, which exercise the full keygen, sign, and verify end to end, they
+    // are what gate a change to the security core.
+
+    fn lcg(seed: u64) -> impl FnMut() -> i32 {
+        let mut s = seed;
+        move || {
+            s = s
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            ((s >> 33) as i32).rem_euclid(Q)
+        }
+    }
+
+    #[test]
+    fn ntt_then_inv_ntt_is_the_identity() {
+        let mut next = lcg(0x9E37_79B9_7F4A_7C15);
+        for _ in 0..2000 {
+            let mut p = ZERO_POLY;
+            for c in p.iter_mut() {
+                *c = next();
+            }
+            let original = p;
+            ntt(&mut p);
+            inv_ntt(&mut p);
+            assert_eq!(p, original, "inv_ntt(ntt(p)) must be the identity");
+        }
+    }
+
+    #[test]
+    fn pointwise_product_is_negacyclic_convolution() {
+        let mut next = lcg(0x243F_6A88_85A3_08D3);
+        for _ in 0..200 {
+            let mut a = ZERO_POLY;
+            for c in a.iter_mut() {
+                *c = next();
+            }
+            let mut b = ZERO_POLY;
+            for c in b.iter_mut() {
+                *c = next();
+            }
+            // Schoolbook negacyclic convolution in the normal domain, mod x^256 + 1.
+            let mut expected = ZERO_POLY;
+            for i in 0..N {
+                for j in 0..N {
+                    let prod = mul_q(a[i], b[j]);
+                    let k = i + j;
+                    if k < N {
+                        expected[k] = add_q(expected[k], prod);
+                    } else {
+                        expected[k - N] = sub_q(expected[k - N], prod);
+                    }
+                }
+            }
+            // The same product taken through the transform domain.
+            let mut a_hat = a;
+            ntt(&mut a_hat);
+            let mut b_hat = b;
+            ntt(&mut b_hat);
+            let mut c_hat = ZERO_POLY;
+            pointwise_acc(&mut c_hat, &a_hat, &b_hat);
+            inv_ntt(&mut c_hat);
+            assert_eq!(
+                c_hat, expected,
+                "transform domain product must equal negacyclic convolution"
+            );
+        }
+    }
+
     #[test]
     fn keygen_matches_official_vectors() {
         let recs = records("keygen_65.txt");
