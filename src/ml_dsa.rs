@@ -1,8 +1,6 @@
-//! ML-DSA (FIPS 204) - module lattice digital signatures. The stack's primary signature scheme:
 
 use crate::sha3::{shake128, shake256};
 
-// Parameters for ML-DSA-65 (FIPS 204, Table 1).
 const Q: i32 = 8380417; // prime modulus, 2^23 - 2^13 + 1
 const N: usize = 256; // ring degree
 const D: usize = 13; // number of dropped bits from t
@@ -16,7 +14,6 @@ const GAMMA2: i32 = (Q - 1) / 32; // low-order rounding range
 const OMEGA: usize = 55; // maximum number of ones in the hint
 const LAMBDA: usize = 192; // collision strength in bits
 
-// Derived encoding sizes.
 const CTILDE_BYTES: usize = LAMBDA / 4; // 48
 const POLYT1_PACKED: usize = 320; // 10 bits per coefficient
 const POLYT0_PACKED: usize = 416; // 13 bits per coefficient
@@ -24,32 +21,22 @@ const POLYETA_PACKED: usize = 128; // 4 bits per coefficient
 const POLYZ_PACKED: usize = 640; // 20 bits per coefficient
 const POLYW1_PACKED: usize = 128; // 4 bits per coefficient
 
-/// Encoded ML-DSA-65 public key length in bytes.
 pub const PUBLIC_KEY_BYTES: usize = 32 + K * POLYT1_PACKED; // 1952
-/// Encoded ML-DSA-65 secret key length in bytes.
 pub const SECRET_KEY_BYTES: usize = 128 + (L + K) * POLYETA_PACKED + K * POLYT0_PACKED; // 4032
-/// Encoded ML-DSA-65 signature length in bytes.
 pub const SIGNATURE_BYTES: usize = CTILDE_BYTES + L * POLYZ_PACKED + OMEGA + K; // 3309
-/// Length of the key generation seed in bytes.
 pub const SEED_BYTES: usize = 32;
 
-/// Encoded ML-DSA-65 public key.
 pub type PublicKey = [u8; PUBLIC_KEY_BYTES];
-/// Encoded ML-DSA-65 secret key.
 pub type SecretKey = [u8; SECRET_KEY_BYTES];
-/// Encoded ML-DSA-65 signature.
 pub type Signature = [u8; SIGNATURE_BYTES];
 
-// A ring element, represented by its 256 coefficients.
 type Poly = [i32; N];
 
 const ZERO_POLY: Poly = [0i32; N];
 
-// SHAKE rates in bytes, used to size squeeze buffers for the rejection samplers.
 const SHAKE128_RATE: usize = 168;
 const SHAKE256_RATE: usize = 136;
 
-// Modular arithmetic over Z_q for inputs already reduced into [0, Q).
 
 fn add_q(a: i32, b: i32) -> i32 {
     let r = a + b;
@@ -73,7 +60,6 @@ fn mul_q(a: i32, b: i32) -> i32 {
     ((a as i64 * b as i64).rem_euclid(Q as i64)) as i32
 }
 
-// Map a small signed value in (-Q, Q) to its representative in [0, Q).
 fn to_pos(a: i32) -> i32 {
     if a < 0 {
         a + Q
@@ -82,7 +68,6 @@ fn to_pos(a: i32) -> i32 {
     }
 }
 
-// The centered representative of a in [0, Q), i.e. a mod +/- Q, in the range (-Q/2, Q/2].
 fn center(a: i32) -> i32 {
     if a > (Q - 1) / 2 {
         a - Q
@@ -91,7 +76,6 @@ fn center(a: i32) -> i32 {
     }
 }
 
-// The infinity norm of a polynomial whose coefficients lie in [0, Q).
 fn inf_norm(p: &Poly) -> i32 {
     let mut max = 0;
     for &c in p.iter() {
@@ -103,9 +87,7 @@ fn inf_norm(p: &Poly) -> i32 {
     max
 }
 
-// Number theoretic transform tables.
 
-// Bit reversal of the low eight bits of i.
 const fn brv8(mut i: usize) -> u32 {
     let mut r = 0u32;
     let mut b = 0;
@@ -117,7 +99,6 @@ const fn brv8(mut i: usize) -> u32 {
     r
 }
 
-// base^exp mod Q for base in [0, Q).
 const fn pow_mod(base: i64, mut exp: u32) -> i64 {
     let mut result = 1i64;
     let mut b = base % Q as i64;
@@ -131,7 +112,6 @@ const fn pow_mod(base: i64, mut exp: u32) -> i64 {
     result
 }
 
-// ZETAS[i] = 1753^{brv8(i)} mod Q, the twiddle factors used by the transform (FIPS 204, section 7.5).
 const ZETAS: [i32; N] = {
     let mut z = [0i32; N];
     let mut i = 0;
@@ -142,7 +122,6 @@ const ZETAS: [i32; N] = {
     z
 };
 
-// In-place forward NTT (FIPS 204, Algorithm 41). Coefficients stay in [0, Q).
 fn ntt(a: &mut Poly) {
     let mut k = 0usize;
     let mut len = 128usize;
@@ -164,9 +143,7 @@ fn ntt(a: &mut Poly) {
     }
 }
 
-// In-place inverse NTT (FIPS 204, Algorithm 42). Coefficients stay in [0, Q).
 fn inv_ntt(a: &mut Poly) {
-    // 256^{-1} mod Q.
     const F: i32 = 8347681;
     let mut k = N;
     let mut len = 1usize;
@@ -192,14 +169,12 @@ fn inv_ntt(a: &mut Poly) {
     }
 }
 
-// Pointwise product in the NTT domain, accumulated into acc.
 fn pointwise_acc(acc: &mut Poly, a: &Poly, b: &Poly) {
     for i in 0..N {
         acc[i] = add_q(acc[i], mul_q(a[i], b[i]));
     }
 }
 
-// SHAKE helpers.
 
 fn shake256_bytes(input: &[u8], outlen: usize) -> Vec<u8> {
     let mut out = vec![0u8; outlen];
@@ -207,9 +182,7 @@ fn shake256_bytes(input: &[u8], outlen: usize) -> Vec<u8> {
     out
 }
 
-// Rounding helpers (FIPS 204, section 7.4).
 
-// Power2Round: split r in [0, Q) into (r1, r0) with r = r1 * 2^D + r0 and r0 in (-2^{D-1}, 2^{D-1}].
 fn power2round(r: i32) -> (i32, i32) {
     let mut r0 = r & ((1 << D) - 1);
     if r0 > (1 << (D - 1)) {
@@ -219,7 +192,6 @@ fn power2round(r: i32) -> (i32, i32) {
     (r1, r0)
 }
 
-// Decompose r in [0, Q) into (r1, r0) using 2*GAMMA2 as the modulus (FIPS 204, Algorithm 36).
 fn decompose(r: i32) -> (i32, i32) {
     let mut r0 = r % (2 * GAMMA2);
     if r0 > GAMMA2 {
@@ -240,7 +212,6 @@ fn low_bits(r: i32) -> i32 {
     decompose(r).1
 }
 
-// MakeHint (FIPS 204, Algorithm 39): does adding z to r change the high bits.
 fn make_hint(z: i32, r: i32) -> u8 {
     if high_bits(r) != high_bits(add_q(r, z)) {
         1
@@ -249,7 +220,6 @@ fn make_hint(z: i32, r: i32) -> u8 {
     }
 }
 
-// UseHint (FIPS 204, Algorithm 40): recover the high bits given the hint bit.
 fn use_hint(h: u8, r: i32) -> i32 {
     let m = (Q - 1) / (2 * GAMMA2);
     let (r1, r0) = decompose(r);
@@ -262,7 +232,6 @@ fn use_hint(h: u8, r: i32) -> i32 {
     }
 }
 
-// Bit packing (FIPS 204, section 7.1). Coefficients are packed least significant bit first.
 
 fn pack_bits(coeffs: &Poly, bits: usize, out: &mut Vec<u8>) {
     let mask: u64 = (1u64 << bits) - 1;
@@ -298,9 +267,7 @@ fn unpack_bits(data: &[u8], bits: usize) -> Poly {
     coeffs
 }
 
-// Sampling routines (FIPS 204, section 7.3).
 
-// RejNTTPoly (Algorithm 30): rejection sample a uniform NTT-domain polynomial from a 34-byte seed.
 fn rej_ntt_poly(seed: &[u8]) -> Poly {
     let mut a = ZERO_POLY;
     let mut buflen = SHAKE128_RATE * 6;
@@ -327,7 +294,6 @@ fn rej_ntt_poly(seed: &[u8]) -> Poly {
     }
 }
 
-// CoeffFromHalfByte for ETA = 4 (FIPS 204, Algorithm 15).
 fn coeff_from_half_byte(b: u8) -> Option<i32> {
     if (b as i32) < 9 {
         Some(ETA - b as i32)
@@ -336,7 +302,6 @@ fn coeff_from_half_byte(b: u8) -> Option<i32> {
     }
 }
 
-// RejBoundedPoly (Algorithm 31): rejection sample a polynomial with coefficients in [-ETA, ETA].
 fn rej_bounded_poly(seed: &[u8]) -> Poly {
     let mut a = ZERO_POLY;
     let mut buflen = SHAKE256_RATE * 5;
@@ -365,7 +330,6 @@ fn rej_bounded_poly(seed: &[u8]) -> Poly {
     }
 }
 
-// ExpandA (Algorithm 32): derive the k-by-l matrix A of NTT-domain polynomials from rho.
 fn expand_a(rho: &[u8]) -> Vec<Vec<Poly>> {
     let mut a = vec![vec![ZERO_POLY; L]; K];
     let mut seed = [0u8; 34];
@@ -380,7 +344,6 @@ fn expand_a(rho: &[u8]) -> Vec<Vec<Poly>> {
     a
 }
 
-// ExpandS (Algorithm 33): derive the secret vectors s1 and s2 from rho_prime.
 fn expand_s(rho_prime: &[u8]) -> (Vec<Poly>, Vec<Poly>) {
     let mut s1 = vec![ZERO_POLY; L];
     let mut s2 = vec![ZERO_POLY; K];
@@ -401,7 +364,6 @@ fn expand_s(rho_prime: &[u8]) -> (Vec<Poly>, Vec<Poly>) {
     (s1, s2)
 }
 
-// ExpandMask (Algorithm 34): derive the mask vector y from rho_prime_prime and the counter kappa.
 fn expand_mask(rho_pp: &[u8], kappa: usize) -> Vec<Poly> {
     let mut y = vec![ZERO_POLY; L];
     let mut seed = [0u8; 66];
@@ -419,7 +381,6 @@ fn expand_mask(rho_pp: &[u8], kappa: usize) -> Vec<Poly> {
     y
 }
 
-// SampleInBall (Algorithm 29): derive the challenge polynomial from c_tilde.
 fn sample_in_ball(c_tilde: &[u8]) -> Poly {
     let mut buflen = SHAKE256_RATE * 2;
     loop {
@@ -461,7 +422,6 @@ fn sample_in_ball(c_tilde: &[u8]) -> Poly {
     }
 }
 
-// Key, signature, and message encodings (FIPS 204, section 7.2).
 
 fn pk_encode(rho: &[u8], t1: &[Poly]) -> PublicKey {
     let mut out = Vec::with_capacity(PUBLIC_KEY_BYTES);
@@ -568,7 +528,6 @@ fn sk_decode(sk: &SecretKey) -> SecretComponents {
     }
 }
 
-// w1Encode (Algorithm 28): pack the high bits of w for the challenge hash.
 fn w1_encode(w1: &[Poly]) -> Vec<u8> {
     let mut out = Vec::with_capacity(K * POLYW1_PACKED);
     for poly in w1.iter() {
@@ -577,7 +536,6 @@ fn w1_encode(w1: &[Poly]) -> Vec<u8> {
     out
 }
 
-// HintBitPack (Algorithm 20): encode the hint as positions plus running counts.
 fn hint_bit_pack(h: &[Poly]) -> Vec<u8> {
     let mut y = vec![0u8; OMEGA + K];
     let mut index = 0usize;
@@ -593,7 +551,6 @@ fn hint_bit_pack(h: &[Poly]) -> Vec<u8> {
     y
 }
 
-// HintBitUnpack (Algorithm 21): decode the hint, returning None on any malformed encoding.
 fn hint_bit_unpack(y: &[u8]) -> Option<Vec<Poly>> {
     let mut h = vec![ZERO_POLY; K];
     let mut index = 0usize;
@@ -656,14 +613,12 @@ fn sig_decode(sig: &Signature) -> Option<DecodedSig> {
     Some(DecodedSig { c_tilde, z, h })
 }
 
-// The number of ones in a hint.
 fn hint_weight(h: &[Poly]) -> usize {
     h.iter()
         .map(|poly| poly.iter().filter(|&&x| x != 0).count())
         .sum()
 }
 
-/// Generate an ML-DSA-65 key pair deterministically from a 32-byte seed
 pub fn keygen(seed: &[u8; SEED_BYTES]) -> (PublicKey, SecretKey) {
     let mut h_in = Vec::with_capacity(34);
     h_in.extend_from_slice(seed);
@@ -677,7 +632,6 @@ pub fn keygen(seed: &[u8; SEED_BYTES]) -> (PublicKey, SecretKey) {
     let a = expand_a(rho);
     let (s1, s2) = expand_s(rho_prime);
 
-    // s1_hat = NTT(s1).
     let mut s1_hat = s1.clone();
     for poly in s1_hat.iter_mut() {
         for c in poly.iter_mut() {
@@ -686,7 +640,6 @@ pub fn keygen(seed: &[u8; SEED_BYTES]) -> (PublicKey, SecretKey) {
         ntt(poly);
     }
 
-    // t = A * s1 + s2, then split into (t1, t0) by Power2Round.
     let mut t1 = vec![ZERO_POLY; K];
     let mut t0 = vec![ZERO_POLY; K];
     for i in 0..K {
@@ -709,8 +662,6 @@ pub fn keygen(seed: &[u8; SEED_BYTES]) -> (PublicKey, SecretKey) {
     (pk, sk)
 }
 
-// The core signing loop shared by the internal and external interfaces (FIPS 204, Algorithm 7).
-// mu is the 64-byte message representative; rnd is the 32-byte per-signature randomizer.
 fn sign_with_mu(sk: &SecretKey, mu: &[u8], rnd: &[u8; 32]) -> Signature {
     let sc = sk_decode(sk);
     let a = expand_a(&sc.rho);
@@ -737,7 +688,6 @@ fn sign_with_mu(sk: &SecretKey, mu: &[u8], rnd: &[u8; 32]) -> Signature {
         ntt(poly);
     }
 
-    // rho_prime_prime = H(K || rnd || mu, 64).
     let mut seed = Vec::with_capacity(32 + 32 + mu.len());
     seed.extend_from_slice(&sc.key);
     seed.extend_from_slice(rnd);
@@ -749,7 +699,6 @@ fn sign_with_mu(sk: &SecretKey, mu: &[u8], rnd: &[u8; 32]) -> Signature {
         let y = expand_mask(&rho_pp, kappa);
         kappa += L;
 
-        // w = A * y.
         let mut y_hat = y.clone();
         for poly in y_hat.iter_mut() {
             ntt(poly);
@@ -768,7 +717,6 @@ fn sign_with_mu(sk: &SecretKey, mu: &[u8], rnd: &[u8; 32]) -> Signature {
             }
         }
 
-        // c_tilde = H(mu || w1Encode(w1), CTILDE_BYTES), then c = SampleInBall(c_tilde).
         let mut ch_in = Vec::with_capacity(mu.len() + K * POLYW1_PACKED);
         ch_in.extend_from_slice(mu);
         ch_in.extend_from_slice(&w1_encode(&w1));
@@ -777,7 +725,6 @@ fn sign_with_mu(sk: &SecretKey, mu: &[u8], rnd: &[u8; 32]) -> Signature {
         let mut c_hat = c;
         ntt(&mut c_hat);
 
-        // z = y + c*s1.
         let mut z = vec![ZERO_POLY; L];
         for j in 0..L {
             let mut cs1 = ZERO_POLY;
@@ -792,7 +739,6 @@ fn sign_with_mu(sk: &SecretKey, mu: &[u8], rnd: &[u8; 32]) -> Signature {
             z_norm = z_norm.max(inf_norm(poly));
         }
 
-        // r0 = LowBits(w - c*s2).
         let mut cs2 = vec![ZERO_POLY; K];
         let mut r0_norm = 0i32;
         for i in 0..K {
@@ -810,7 +756,6 @@ fn sign_with_mu(sk: &SecretKey, mu: &[u8], rnd: &[u8; 32]) -> Signature {
             continue;
         }
 
-        // Build the hint from c*t0.
         let mut h = vec![ZERO_POLY; K];
         let mut ct0_norm = 0i32;
         for i in 0..K {
@@ -833,7 +778,6 @@ fn sign_with_mu(sk: &SecretKey, mu: &[u8], rnd: &[u8; 32]) -> Signature {
     }
 }
 
-// Compute mu = H(tr || m_prime, 64).
 fn compute_mu(tr: &[u8], m_prime: &[u8]) -> Vec<u8> {
     let mut buf = Vec::with_capacity(tr.len() + m_prime.len());
     buf.extend_from_slice(tr);
@@ -841,21 +785,18 @@ fn compute_mu(tr: &[u8], m_prime: &[u8]) -> Vec<u8> {
     shake256_bytes(&buf, 64)
 }
 
-/// Sign a pre-formatted message representative (FIPS 204, Algorithm 7, ML-DSA.Sign_internal).
 pub fn sign_internal(sk: &SecretKey, m_prime: &[u8], rnd: &[u8; 32]) -> Signature {
     let sc = sk_decode(sk);
     let mu = compute_mu(&sc.tr, m_prime);
     sign_with_mu(sk, &mu, rnd)
 }
 
-/// Verify a pre-formatted message representative (FIPS 204, Algorithm 8, ML-DSA.Verify_internal).
 pub fn verify_internal(pk: &PublicKey, m_prime: &[u8], sig: &Signature) -> bool {
     let tr = shake256_bytes(pk, 64);
     let mu = compute_mu(&tr, m_prime);
     verify_with_mu(pk, &mu, sig)
 }
 
-// The core verification routine shared by the internal and external interfaces.
 fn verify_with_mu(pk: &PublicKey, mu: &[u8], sig: &Signature) -> bool {
     let decoded = match sig_decode(sig) {
         Some(d) => d,
@@ -878,7 +819,6 @@ fn verify_with_mu(pk: &PublicKey, mu: &[u8], sig: &Signature) -> bool {
     let mut c_hat = c;
     ntt(&mut c_hat);
 
-    // z_hat = NTT(z) with z coefficients mapped into [0, Q).
     let mut z_hat = decoded.z.clone();
     for poly in z_hat.iter_mut() {
         for c in poly.iter_mut() {
@@ -887,7 +827,6 @@ fn verify_with_mu(pk: &PublicKey, mu: &[u8], sig: &Signature) -> bool {
         ntt(poly);
     }
 
-    // t1_hat = NTT(t1 * 2^D).
     let mut t1_hat = t1.clone();
     for poly in t1_hat.iter_mut() {
         for c in poly.iter_mut() {
@@ -896,7 +835,6 @@ fn verify_with_mu(pk: &PublicKey, mu: &[u8], sig: &Signature) -> bool {
         ntt(poly);
     }
 
-    // w_approx = A*z - c*t1*2^D, then w1 = UseHint(h, w_approx).
     let mut w1 = vec![ZERO_POLY; K];
     for i in 0..K {
         let mut acc = ZERO_POLY;
@@ -922,7 +860,6 @@ fn verify_with_mu(pk: &PublicKey, mu: &[u8], sig: &Signature) -> bool {
     c_tilde == decoded.c_tilde
 }
 
-// Format the external message representative M' = 0 || len(ctx) || ctx || message (pure variant).
 fn format_message(context: &[u8], message: &[u8]) -> Option<Vec<u8>> {
     if context.len() > 255 {
         return None;
@@ -935,13 +872,11 @@ fn format_message(context: &[u8], message: &[u8]) -> Option<Vec<u8>> {
     Some(m)
 }
 
-/// Sign a message with an application context string (FIPS 204, Algorithm 2, ML-DSA.Sign, pure).
 pub fn sign(sk: &SecretKey, message: &[u8], context: &[u8], rnd: &[u8; 32]) -> Option<Signature> {
     let m_prime = format_message(context, message)?;
     Some(sign_internal(sk, &m_prime, rnd))
 }
 
-/// Verify a message and its context string (FIPS 204, Algorithm 3, ML-DSA.Verify, pure).
 pub fn verify(pk: &PublicKey, message: &[u8], signature: &Signature, context: &[u8]) -> bool {
     let m_prime = match format_message(context, message) {
         Some(m) => m,
@@ -991,11 +926,6 @@ mod tests {
             .collect()
     }
 
-    // Correctness gate for any optimisation of the transform, including the SIMD work. These pin the
-    // meaning of the transform rather than its exact intermediate values, so an implementation that
-    // changes representation (for example Montgomery form) still has to satisfy them. Together with the
-    // FIPS-204 known answer vectors, which exercise the full keygen, sign, and verify end to end, they
-    // are what gate a change to the security core.
 
     fn lcg(seed: u64) -> impl FnMut() -> i32 {
         let mut s = seed;
@@ -1034,7 +964,6 @@ mod tests {
             for c in b.iter_mut() {
                 *c = next();
             }
-            // Schoolbook negacyclic convolution in the normal domain, mod x^256 + 1.
             let mut expected = ZERO_POLY;
             for i in 0..N {
                 for j in 0..N {
@@ -1047,7 +976,6 @@ mod tests {
                     }
                 }
             }
-            // The same product taken through the transform domain.
             let mut a_hat = a;
             ntt(&mut a_hat);
             let mut b_hat = b;

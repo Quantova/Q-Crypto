@@ -1,8 +1,6 @@
-//! ML-KEM (FIPS 203) - module lattice key encapsulation. Backs the QUIC transport key exchange in
 
 use crate::sha3::{sha3_256, sha3_512, shake128, shake256};
 
-// Parameters for ML-KEM-768 (FIPS 203, Table 2).
 const Q: i32 = 3329; // prime modulus, 13 * 2^8 + 1
 const N: usize = 256; // ring degree
 const K: usize = 3; // module rank
@@ -11,35 +9,23 @@ const ETA2: usize = 2; // encryption error CBD parameter
 const DU: usize = 10; // ciphertext compression bits for u
 const DV: usize = 4; // ciphertext compression bits for v
 
-// Number of bytes in ByteEncode_12 of a single ring element (12 bits per coefficient).
 const POLY_BYTES: usize = 12 * N / 8; // 384
 
-/// Encoded ML-KEM-768 encapsulation key length in bytes.
 pub const ENCAPS_KEY_BYTES: usize = K * POLY_BYTES + 32; // 1184
-/// Encoded ML-KEM-768 decapsulation key length in bytes.
 pub const DECAPS_KEY_BYTES: usize = 2 * K * POLY_BYTES + 96; // 2400
-/// Encoded ML-KEM-768 ciphertext length in bytes.
 pub const CIPHERTEXT_BYTES: usize = 32 * (DU * K + DV); // 1088
-/// Length of the shared secret in bytes.
 pub const SHARED_SECRET_BYTES: usize = 32;
-/// Length of each key generation and encapsulation seed in bytes.
 pub const SEED_BYTES: usize = 32;
 
-/// Encoded ML-KEM-768 encapsulation key.
 pub type EncapsKey = [u8; ENCAPS_KEY_BYTES];
-/// Encoded ML-KEM-768 decapsulation key.
 pub type DecapsKey = [u8; DECAPS_KEY_BYTES];
-/// Encoded ML-KEM-768 ciphertext.
 pub type Ciphertext = [u8; CIPHERTEXT_BYTES];
-/// The shared secret produced by encapsulation and decapsulation.
 pub type SharedSecret = [u8; SHARED_SECRET_BYTES];
 
-// A ring element, represented by its 256 coefficients in [0, Q).
 type Poly = [i32; N];
 
 const ZERO_POLY: Poly = [0i32; N];
 
-// Modular arithmetic over Z_q for inputs already reduced into [0, Q).
 
 fn add_q(a: i32, b: i32) -> i32 {
     let r = a + b;
@@ -63,9 +49,7 @@ fn mul_q(a: i32, b: i32) -> i32 {
     (a * b) % Q
 }
 
-// Number theoretic transform tables.
 
-// Bit reversal of the low seven bits of i.
 const fn brv7(mut i: usize) -> u32 {
     let mut r = 0u32;
     let mut b = 0;
@@ -77,7 +61,6 @@ const fn brv7(mut i: usize) -> u32 {
     r
 }
 
-// base^exp mod Q for base in [0, Q).
 const fn pow_mod(base: i64, mut exp: u32) -> i64 {
     let mut result = 1i64;
     let mut b = base % Q as i64;
@@ -91,7 +74,6 @@ const fn pow_mod(base: i64, mut exp: u32) -> i64 {
     result
 }
 
-// ZETAS[i] = 17^{brv7(i)} mod Q, the twiddle factors of the length-128 transform (FIPS 203, 4.3).
 const ZETAS: [i32; 128] = {
     let mut z = [0i32; 128];
     let mut i = 0;
@@ -102,7 +84,6 @@ const ZETAS: [i32; 128] = {
     z
 };
 
-// GAMMAS[i] = 17^{2*brv7(i)+1} mod Q, the moduli of the degree-two base rings (FIPS 203, 4.3).
 const GAMMAS: [i32; 128] = {
     let mut g = [0i32; 128];
     let mut i = 0;
@@ -113,7 +94,6 @@ const GAMMAS: [i32; 128] = {
     g
 };
 
-// In-place forward NTT (FIPS 203, Algorithm 9). Coefficients stay in [0, Q).
 fn ntt(a: &mut Poly) {
     let mut k = 1usize;
     let mut len = 128usize;
@@ -135,9 +115,7 @@ fn ntt(a: &mut Poly) {
     }
 }
 
-// In-place inverse NTT (FIPS 203, Algorithm 10). Coefficients stay in [0, Q).
 fn inv_ntt(a: &mut Poly) {
-    // 128^{-1} mod Q.
     const F: i32 = 3303;
     let mut k = 127usize;
     let mut len = 2usize;
@@ -163,8 +141,6 @@ fn inv_ntt(a: &mut Poly) {
     }
 }
 
-// MultiplyNTTs (FIPS 203, Algorithm 11) built from BaseCaseMultiply (Algorithm 12). The product of
-// two NTT-domain elements is taken in the 128 degree-two rings Z_q[x]/(x^2 - GAMMAS[i]).
 fn multiply_ntts(f: &Poly, g: &Poly) -> Poly {
     let mut h = ZERO_POLY;
     let mut i = 0usize;
@@ -181,7 +157,6 @@ fn multiply_ntts(f: &Poly, g: &Poly) -> Poly {
     h
 }
 
-// Pointwise product in the NTT domain, accumulated into acc.
 fn pointwise_acc(acc: &mut Poly, a: &Poly, b: &Poly) {
     let h = multiply_ntts(a, b);
     for i in 0..N {
@@ -189,7 +164,6 @@ fn pointwise_acc(acc: &mut Poly, a: &Poly, b: &Poly) {
     }
 }
 
-// Compression and decompression (FIPS 203, 4.2.1). Coefficients round to and from d-bit values.
 
 fn compress(x: i32, d: usize) -> i32 {
     let t = ((x as u32) << d) + (Q as u32) / 2;
@@ -201,8 +175,6 @@ fn decompress(y: i32, d: usize) -> i32 {
     t as i32
 }
 
-// Bit packing (FIPS 203, ByteEncode and ByteDecode, Algorithms 5 and 6). Coefficients are packed
-// least significant bit first.
 
 fn pack_bits(coeffs: &Poly, bits: usize, out: &mut Vec<u8>) {
     let mask: u64 = (1u64 << bits) - 1;
@@ -238,7 +210,6 @@ fn unpack_bits(data: &[u8], bits: usize) -> Poly {
     coeffs
 }
 
-// ByteDecode_12 of one ring element, reducing each coefficient modulo Q (FIPS 203, Algorithm 6).
 fn byte_decode_12(data: &[u8]) -> Poly {
     let mut p = unpack_bits(data, 12);
     for c in p.iter_mut() {
@@ -247,12 +218,9 @@ fn byte_decode_12(data: &[u8]) -> Poly {
     p
 }
 
-// Sampling routines (FIPS 203, 4.2.2).
 
-// SHAKE128 rate in bytes, used to size the squeeze buffer for the uniform sampler.
 const SHAKE128_RATE: usize = 168;
 
-// SampleNTT (Algorithm 7): rejection sample a uniform NTT-domain element from a 34-byte seed.
 fn sample_ntt(seed: &[u8]) -> Poly {
     let mut a = ZERO_POLY;
     let mut buflen = SHAKE128_RATE * 6;
@@ -281,8 +249,6 @@ fn sample_ntt(seed: &[u8]) -> Poly {
     }
 }
 
-// SamplePolyCBD_eta (Algorithm 8): sample an element with coefficients from a centered binomial
-// distribution over the byte array (length 64*eta).
 fn sample_poly_cbd(bytes: &[u8], eta: usize) -> Poly {
     let bit = |l: usize| -> i32 { ((bytes[l >> 3] >> (l & 7)) & 1) as i32 };
     let mut f = ZERO_POLY;
@@ -298,7 +264,6 @@ fn sample_poly_cbd(bytes: &[u8], eta: usize) -> Poly {
     f
 }
 
-// PRF_eta (FIPS 203, 4.1): SHAKE256 keyed by a 32-byte seed and a one-byte nonce, 64*eta bytes out.
 fn prf(eta: usize, seed: &[u8], nonce: u8) -> Vec<u8> {
     let mut input = Vec::with_capacity(33);
     input.extend_from_slice(seed);
@@ -308,9 +273,6 @@ fn prf(eta: usize, seed: &[u8], nonce: u8) -> Vec<u8> {
     out
 }
 
-// ExpandA: derive the k-by-k matrix of NTT-domain elements from rho. When transpose is false, entry
-// [i][j] is sampled from rho || j || i (the layout used by key generation); when true, from
-// rho || i || j (the transposed layout used by encryption).
 fn expand_a(rho: &[u8], transpose: bool) -> Vec<Vec<Poly>> {
     let mut a = vec![vec![ZERO_POLY; K]; K];
     let mut seed = [0u8; 34];
@@ -330,7 +292,6 @@ fn expand_a(rho: &[u8], transpose: bool) -> Vec<Vec<Poly>> {
     a
 }
 
-// K-PKE.KeyGen (FIPS 203, Algorithm 13): expand the seed into an encryption key pair.
 fn kpke_keygen(d: &[u8]) -> (Vec<u8>, Vec<u8>) {
     let mut g_in = Vec::with_capacity(33);
     g_in.extend_from_slice(d);
@@ -359,7 +320,6 @@ fn kpke_keygen(d: &[u8]) -> (Vec<u8>, Vec<u8>) {
         ntt(poly);
     }
 
-    // t_hat = A_hat * s_hat + e_hat.
     let mut t = vec![ZERO_POLY; K];
     for i in 0..K {
         let mut acc = ZERO_POLY;
@@ -384,7 +344,6 @@ fn kpke_keygen(d: &[u8]) -> (Vec<u8>, Vec<u8>) {
     (ek, dk)
 }
 
-// K-PKE.Encrypt (FIPS 203, Algorithm 14): encrypt the 32-byte message m under ek with randomness r.
 fn kpke_encrypt(ek: &[u8], m: &[u8], r: &[u8]) -> Vec<u8> {
     let mut t = vec![ZERO_POLY; K];
     for i in 0..K {
@@ -410,7 +369,6 @@ fn kpke_encrypt(ek: &[u8], m: &[u8], r: &[u8]) -> Vec<u8> {
         ntt(poly);
     }
 
-    // u = NTT^{-1}(A_hat^T * y_hat) + e1.
     let mut u = vec![ZERO_POLY; K];
     for i in 0..K {
         let mut acc = ZERO_POLY;
@@ -423,7 +381,6 @@ fn kpke_encrypt(ek: &[u8], m: &[u8], r: &[u8]) -> Vec<u8> {
         }
     }
 
-    // v = NTT^{-1}(t_hat^T * y_hat) + e2 + Decompress_1(m).
     let mut acc = ZERO_POLY;
     for i in 0..K {
         pointwise_acc(&mut acc, &t[i], &y[i]);
@@ -451,7 +408,6 @@ fn kpke_encrypt(ek: &[u8], m: &[u8], r: &[u8]) -> Vec<u8> {
     c
 }
 
-// K-PKE.Decrypt (FIPS 203, Algorithm 15): recover the 32-byte message from the ciphertext.
 fn kpke_decrypt(dk: &[u8], c: &[u8]) -> Vec<u8> {
     let split = 32 * DU * K;
     let mut u = vec![ZERO_POLY; K];
@@ -490,7 +446,6 @@ fn kpke_decrypt(dk: &[u8], c: &[u8]) -> Vec<u8> {
     out
 }
 
-// Constant-time equality mask: 255 when the slices are equal, 0 otherwise.
 fn ct_eq(a: &[u8], b: &[u8]) -> u8 {
     let mut diff = 0u8;
     for i in 0..a.len() {
@@ -499,7 +454,6 @@ fn ct_eq(a: &[u8], b: &[u8]) -> u8 {
     (((diff as u16).wrapping_sub(1)) >> 8) as u8
 }
 
-/// Generate an ML-KEM-768 key pair deterministically from the 32-byte seeds d and z
 pub fn keygen(d: &[u8; SEED_BYTES], z: &[u8; SEED_BYTES]) -> (EncapsKey, DecapsKey) {
     let (ek_pke, dk_pke) = kpke_keygen(d);
 
@@ -517,7 +471,6 @@ pub fn keygen(d: &[u8; SEED_BYTES], z: &[u8; SEED_BYTES]) -> (EncapsKey, DecapsK
     (ek, dk_arr)
 }
 
-/// Encapsulate to an encapsulation key using the 32-byte message m, returning the shared secret and
 pub fn encaps(ek: &EncapsKey, m: &[u8; SEED_BYTES]) -> (SharedSecret, Ciphertext) {
     let mut g_in = Vec::with_capacity(64);
     g_in.extend_from_slice(m);
@@ -533,7 +486,6 @@ pub fn encaps(ek: &EncapsKey, m: &[u8; SEED_BYTES]) -> (SharedSecret, Ciphertext
     (shared, ct)
 }
 
-/// Decapsulate a ciphertext with a decapsulation key, returning the shared secret. On a ciphertext
 pub fn decaps(dk: &DecapsKey, c: &Ciphertext) -> SharedSecret {
     let dk_pke = &dk[..K * POLY_BYTES];
     let ek_pke = &dk[K * POLY_BYTES..2 * K * POLY_BYTES + 32];
@@ -656,7 +608,6 @@ mod tests {
         let (k, c) = encaps(&ek, &m);
         assert_eq!(decaps(&dk, &c), k);
 
-        // A tampered ciphertext must decapsulate to the implicit rejection secret, not to k.
         let mut bad = c;
         bad[0] ^= 1;
         assert_ne!(decaps(&dk, &bad), k);

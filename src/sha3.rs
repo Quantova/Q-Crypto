@@ -1,6 +1,4 @@
-//! SHA-3 and SHAKE (FIPS 202). Implemented first - every other primitive and the PQ VRF build on it.
 
-// Round constants for the iota step of Qudros-f[1600] (FIPS 202, 24 rounds).
 const RC: [u64; 24] = [
     1,
     32898,
@@ -28,20 +26,16 @@ const RC: [u64; 24] = [
     9223372039002292232,
 ];
 
-// Rotation offsets for the rho step, ordered to match the pi lane traversal below.
 const RHO: [u32; 24] = [
     1, 3, 6, 10, 15, 21, 28, 36, 45, 55, 2, 14, 27, 41, 56, 8, 25, 43, 62, 18, 39, 61, 20, 44,
 ];
 
-// Lane permutation for the pi step.
 const PI: [usize; 24] = [
     10, 7, 11, 17, 18, 3, 5, 16, 8, 21, 24, 4, 15, 23, 19, 13, 12, 2, 20, 14, 22, 9, 6, 1,
 ];
 
-// The Qudros-f[1600] permutation over a state of 25 lanes of 64 bits.
 fn qudros_f1600(state: &mut [u64; 25]) {
     for round in 0..24 {
-        // Theta
         let mut c = [0u64; 5];
         for x in 0..5 {
             c[x] = state[x] ^ state[x + 5] ^ state[x + 10] ^ state[x + 15] ^ state[x + 20];
@@ -53,7 +47,6 @@ fn qudros_f1600(state: &mut [u64; 25]) {
             }
         }
 
-        // Rho and Pi
         let mut last = state[1];
         for i in 0..24 {
             let j = PI[i];
@@ -62,7 +55,6 @@ fn qudros_f1600(state: &mut [u64; 25]) {
             last = tmp;
         }
 
-        // Chi
         for y in 0..5 {
             let row = y * 5;
             let mut plane = [0u64; 5];
@@ -74,31 +66,25 @@ fn qudros_f1600(state: &mut [u64; 25]) {
             }
         }
 
-        // Iota
         state[0] ^= RC[round];
     }
 }
 
-// Absorb a single byte into the lane state at the given rate offset.
 fn absorb_byte(state: &mut [u64; 25], offset: usize, byte: u8) {
     let lane = offset / 8;
     let shift = 8 * (offset % 8);
     state[lane] ^= (byte as u64) << shift;
 }
 
-// Read a single byte of the lane state at the given rate offset.
 fn squeeze_byte(state: &[u64; 25], offset: usize) -> u8 {
     let lane = offset / 8;
     let shift = 8 * (offset % 8);
     (state[lane] >> shift) as u8
 }
 
-// The Qudros sponge with byte rate `rate` and FIPS 202 domain byte `domain`.
-// `domain` is 6 for SHA3 (bits 01 then pad10*1) and 31 for SHAKE (bits 1111 then pad10*1).
 fn sponge(rate: usize, domain: u8, input: &[u8], output: &mut [u8]) {
     let mut state = [0u64; 25];
 
-    // Absorb full blocks, permuting whenever the rate boundary is reached.
     let mut offset = 0;
     for &byte in input {
         absorb_byte(&mut state, offset, byte);
@@ -109,12 +95,10 @@ fn sponge(rate: usize, domain: u8, input: &[u8], output: &mut [u8]) {
         }
     }
 
-    // Pad: domain bits at the current offset, high bit at the last rate byte.
     absorb_byte(&mut state, offset, domain);
     absorb_byte(&mut state, rate - 1, 128);
     qudros_f1600(&mut state);
 
-    // Squeeze the requested number of output bytes.
     let mut produced = 0;
     let mut pos = 0;
     while produced < output.len() {
@@ -128,26 +112,22 @@ fn sponge(rate: usize, domain: u8, input: &[u8], output: &mut [u8]) {
     }
 }
 
-/// SHA3-256 (FIPS 202): fixed 32-byte digest, rate 136 bytes.
 pub fn sha3_256(input: &[u8]) -> [u8; 32] {
     let mut out = [0u8; 32];
     sponge(136, 6, input, &mut out);
     out
 }
 
-/// SHA3-512 (FIPS 202): fixed 64-byte digest, rate 72 bytes.
 pub fn sha3_512(input: &[u8]) -> [u8; 64] {
     let mut out = [0u8; 64];
     sponge(72, 6, input, &mut out);
     out
 }
 
-/// SHAKE128 (FIPS 202): extendable output, rate 168 bytes. Fills `output` fully.
 pub fn shake128(input: &[u8], output: &mut [u8]) {
     sponge(168, 31, input, output);
 }
 
-/// SHAKE256 (FIPS 202): extendable output, rate 136 bytes. Fills `output` fully.
 pub fn shake256(input: &[u8], output: &mut [u8]) {
     sponge(136, 31, input, output);
 }
@@ -156,7 +136,6 @@ pub fn shake256(input: &[u8], output: &mut [u8]) {
 mod tests {
     use super::*;
 
-    // Decode an even-length hexadecimal string into a byte vector.
     fn hex(s: &str) -> Vec<u8> {
         assert!(s.len() % 2 == 0);
         (0..s.len() / 2)
@@ -228,7 +207,6 @@ mod tests {
         );
     }
 
-    // FIPS 202 domain separation makes SHA3-256 differ from the classical padding.
     #[test]
     fn sha3_256_differs_from_classical() {
         let fips = sha3_256(b"");

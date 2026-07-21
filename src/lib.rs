@@ -1,4 +1,3 @@
-//! qtv-crypto - the single source of cryptography in the Quantova organization.
 
 #![forbid(unsafe_op_in_unsafe_fn)]
 

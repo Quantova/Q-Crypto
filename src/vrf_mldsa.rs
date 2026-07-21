@@ -1,28 +1,20 @@
-//! Lattice-based post quantum VRF (ML-DSA). The second construction on the same interface as the
 
 use crate::ml_dsa;
 use crate::sha3::shake256;
 
-/// Secret key length in bytes (the ML-DSA secret key).
 pub const SECRET_KEY_BYTES: usize = ml_dsa::SECRET_KEY_BYTES;
-/// Public key length in bytes (the ML-DSA public key).
 pub const PUBLIC_KEY_BYTES: usize = ml_dsa::PUBLIC_KEY_BYTES;
-/// Proof length in bytes (one ML-DSA signature).
 pub const PROOF_BYTES: usize = ml_dsa::SIGNATURE_BYTES;
-/// Output length in bytes (fixed SHAKE256 output).
 pub const OUTPUT_BYTES: usize = 32;
 
-// FIPS 204 deterministic signing uses an all-zero randomizer.
 const DETERMINISTIC_RND: [u8; 32] = [0u8; 32];
 
-// The VRF output is a fixed-length SHAKE256 digest of the proof.
 fn output_from_proof(proof: &[u8; PROOF_BYTES]) -> [u8; OUTPUT_BYTES] {
     let mut output = [0u8; OUTPUT_BYTES];
     shake256(proof, &mut output);
     output
 }
 
-/// Generate a VRF key pair from a caller-supplied seed.
 pub fn keygen(seed: &[u8]) -> ([u8; SECRET_KEY_BYTES], [u8; PUBLIC_KEY_BYTES]) {
     let mut mldsa_seed = [0u8; ml_dsa::SEED_BYTES];
     shake256(seed, &mut mldsa_seed);
@@ -30,14 +22,12 @@ pub fn keygen(seed: &[u8]) -> ([u8; SECRET_KEY_BYTES], [u8; PUBLIC_KEY_BYTES]) {
     (sk, pk)
 }
 
-/// Evaluate the VRF on `input` with the secret key.
 pub fn prove(sk: &[u8; SECRET_KEY_BYTES], input: &[u8]) -> ([u8; OUTPUT_BYTES], [u8; PROOF_BYTES]) {
     let proof = ml_dsa::sign_internal(sk, input, &DETERMINISTIC_RND);
     let output = output_from_proof(&proof);
     (output, proof)
 }
 
-/// Verify a VRF output and proof for `input` under the public key.
 pub fn verify(
     pk: &[u8; PUBLIC_KEY_BYTES],
     input: &[u8],
@@ -54,7 +44,6 @@ pub fn verify(
 mod tests {
     use super::*;
 
-    // A fixed key pair for the tests.
     fn key_pair() -> ([u8; SECRET_KEY_BYTES], [u8; PUBLIC_KEY_BYTES]) {
         keygen(b"quantova mldsa vrf test seed")
     }
@@ -101,9 +90,7 @@ mod tests {
         let (_other_sk, other_pk) = keygen(b"a different signer");
         let input = b"an input";
         let (output, proof) = prove(&sk, input);
-        // The output and proof are valid under this signer's own key.
         assert!(verify(&pk, input, &output, &proof));
-        // They must not verify under an unrelated public key.
         assert!(!verify(&other_pk, input, &output, &proof));
     }
 

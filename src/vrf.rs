@@ -1,29 +1,20 @@
-//! Hash based post quantum VRF (SHA-3/SHAKE). Backs validator committee sampling in QORUS and the
 
 use crate::sha3::shake256;
 use crate::slh_dsa;
 
-/// Secret key length in bytes (the SLH-DSA secret key).
 pub const SECRET_KEY_BYTES: usize = slh_dsa::SECRET_KEY_BYTES;
-/// Public key length in bytes (the SLH-DSA public key).
 pub const PUBLIC_KEY_BYTES: usize = slh_dsa::PUBLIC_KEY_BYTES;
-/// Proof length in bytes (one SLH-DSA signature).
 pub const PROOF_BYTES: usize = slh_dsa::SIGNATURE_BYTES;
-/// Output length in bytes (fixed SHAKE256 output).
 pub const OUTPUT_BYTES: usize = 32;
 
-// Length of a single SLH-DSA seed. The secret key holds four seed-sized fields
-// (SK.seed, SK.prf, PK.seed, PK.root), so one seed is a quarter of the secret key.
 const SEED_BYTES: usize = slh_dsa::SECRET_KEY_BYTES / 4;
 
-// The VRF output is a fixed-length SHAKE256 digest of the proof.
 fn output_from_proof(proof: &[u8; PROOF_BYTES]) -> [u8; OUTPUT_BYTES] {
     let mut output = [0u8; OUTPUT_BYTES];
     shake256(proof, &mut output);
     output
 }
 
-/// Generate a VRF key pair from a caller-supplied seed.
 pub fn keygen(seed: &[u8]) -> ([u8; SECRET_KEY_BYTES], [u8; PUBLIC_KEY_BYTES]) {
     let mut expanded = [0u8; 3 * SEED_BYTES];
     shake256(seed, &mut expanded);
@@ -38,7 +29,6 @@ pub fn keygen(seed: &[u8]) -> ([u8; SECRET_KEY_BYTES], [u8; PUBLIC_KEY_BYTES]) {
     slh_dsa::keygen(&sk_seed, &sk_prf, &pk_seed)
 }
 
-/// Evaluate the VRF on `input` with the secret key.
 pub fn prove(sk: &[u8; SECRET_KEY_BYTES], input: &[u8]) -> ([u8; OUTPUT_BYTES], [u8; PROOF_BYTES]) {
     let mut addrnd = [0u8; SEED_BYTES];
     addrnd.copy_from_slice(&sk[2 * SEED_BYTES..3 * SEED_BYTES]);
@@ -48,7 +38,6 @@ pub fn prove(sk: &[u8; SECRET_KEY_BYTES], input: &[u8]) -> ([u8; OUTPUT_BYTES], 
     (output, proof)
 }
 
-/// Verify a VRF output and proof for `input` under the public key.
 pub fn verify(
     pk: &[u8; PUBLIC_KEY_BYTES],
     input: &[u8],
@@ -65,7 +54,6 @@ pub fn verify(
 mod tests {
     use super::*;
 
-    // A fixed key pair for the tests.
     fn key_pair() -> ([u8; SECRET_KEY_BYTES], [u8; PUBLIC_KEY_BYTES]) {
         keygen(b"quantova vrf test seed")
     }

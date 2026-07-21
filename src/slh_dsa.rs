@@ -1,8 +1,6 @@
-//! SLH-DSA (FIPS 205) - stateless hash based signatures. Conservative signature option; backs the
 
 use crate::sha3::shake256;
 
-// Parameter set SLH-DSA-SHAKE-192s (FIPS 205, Table 2).
 const N: usize = 24; // security parameter in bytes
 const H: usize = 63; // total hypertree height
 const D: usize = 7; // number of hypertree layers
@@ -15,24 +13,18 @@ const LEN1: usize = (8 * N + LGW - 1) / LGW; // 48
 const LEN2: usize = 3; // checksum chain count
 const LEN: usize = LEN1 + LEN2; // 51 WOTS+ chains
 
-// Message digest split produced by H_msg (FIPS 205 Algorithm 19).
 const MD_BYTES: usize = (K * A + 7) / 8; // 30, feeds the FORS message indices
 const TREE_BYTES: usize = (H - HP + 7) / 8; // 7, feeds the hypertree address
 const LEAF_BYTES: usize = (HP + 7) / 8; // 2, feeds the leaf address
 const DIGEST_BYTES: usize = MD_BYTES + TREE_BYTES + LEAF_BYTES; // 39
 
-// One XMSS signature is a WOTS+ signature followed by its authentication path.
 const XMSS_SIG_BYTES: usize = (LEN + HP) * N; // 1440
 const FORS_SIG_BYTES: usize = K * (1 + A) * N; // 6120
 
-/// Public key length in bytes (PK.seed followed by PK.root).
 pub const PUBLIC_KEY_BYTES: usize = 2 * N; // 48
-/// Secret key length in bytes (SK.seed, SK.prf, PK.seed, PK.root).
 pub const SECRET_KEY_BYTES: usize = 4 * N; // 96
-/// Signature length in bytes.
 pub const SIGNATURE_BYTES: usize = N + FORS_SIG_BYTES + D * XMSS_SIG_BYTES; // 16224
 
-// ADRS type words (FIPS 205 section 4.2).
 const WOTS_HASH: u32 = 0;
 const WOTS_PK: u32 = 1;
 const TREE: u32 = 2;
@@ -41,7 +33,6 @@ const FORS_ROOTS: u32 = 4;
 const WOTS_PRF: u32 = 5;
 const FORS_PRF: u32 = 6;
 
-// The full 32-byte address used by the SHAKE instantiation.
 #[derive(Clone)]
 struct Adrs([u8; 32]);
 
@@ -55,7 +46,6 @@ impl Adrs {
     }
 
     fn set_tree(&mut self, tree: u64) {
-        // The tree address is the 12-byte field at offset 4; the high 4 bytes are always zero here.
         self.0[4..8].copy_from_slice(&[0u8; 4]);
         self.0[8..16].copy_from_slice(&tree.to_be_bytes());
     }
@@ -94,7 +84,6 @@ impl Adrs {
     }
 }
 
-// PRF(PK.seed, SK.seed, ADRS) = SHAKE256(PK.seed || ADRS || SK.seed, 8n).
 fn prf(pk_seed: &[u8], sk_seed: &[u8], adrs: &Adrs) -> [u8; N] {
     let mut input = [0u8; N + 32 + N];
     input[..N].copy_from_slice(pk_seed);
@@ -105,7 +94,6 @@ fn prf(pk_seed: &[u8], sk_seed: &[u8], adrs: &Adrs) -> [u8; N] {
     out
 }
 
-// F, H and T_l all reduce to SHAKE256(PK.seed || ADRS || message, 8n).
 fn hash_n(pk_seed: &[u8], adrs: &Adrs, message: &[u8]) -> [u8; N] {
     let mut input = Vec::with_capacity(N + 32 + message.len());
     input.extend_from_slice(pk_seed);
@@ -116,7 +104,6 @@ fn hash_n(pk_seed: &[u8], adrs: &Adrs, message: &[u8]) -> [u8; N] {
     out
 }
 
-// PRF_msg(SK.prf, opt_rand, M) = SHAKE256(SK.prf || opt_rand || M, 8n).
 fn prf_msg(sk_prf: &[u8], opt_rand: &[u8], message: &[u8]) -> [u8; N] {
     let mut input = Vec::with_capacity(N + N + message.len());
     input.extend_from_slice(sk_prf);
@@ -127,7 +114,6 @@ fn prf_msg(sk_prf: &[u8], opt_rand: &[u8], message: &[u8]) -> [u8; N] {
     out
 }
 
-// H_msg(R, PK.seed, PK.root, M) = SHAKE256(R || PK.seed || PK.root || M, 8m).
 fn h_msg(r: &[u8], pk_seed: &[u8], pk_root: &[u8], message: &[u8]) -> [u8; DIGEST_BYTES] {
     let mut input = Vec::with_capacity(N + N + N + message.len());
     input.extend_from_slice(r);
@@ -139,7 +125,6 @@ fn h_msg(r: &[u8], pk_seed: &[u8], pk_root: &[u8], message: &[u8]) -> [u8; DIGES
     out
 }
 
-// Big-endian byte string to integer (FIPS 205 toInt).
 fn to_int(bytes: &[u8]) -> u64 {
     let mut value = 0u64;
     for &b in bytes {
@@ -148,7 +133,6 @@ fn to_int(bytes: &[u8]) -> u64 {
     value
 }
 
-// Split a byte string into out_len integers of b bits each, most significant bit first (base_2b).
 fn base_2b(x: &[u8], b: usize, out_len: usize) -> Vec<u32> {
     let mut out = Vec::with_capacity(out_len);
     let mut pos = 0usize;
@@ -167,7 +151,6 @@ fn base_2b(x: &[u8], b: usize, out_len: usize) -> Vec<u32> {
     out
 }
 
-// A WOTS+ hash chain from position start for the given number of steps.
 fn chain(input: &[u8; N], start: u32, steps: u32, pk_seed: &[u8], adrs: &mut Adrs) -> [u8; N] {
     let mut tmp = *input;
     for j in start..start + steps {
@@ -177,7 +160,6 @@ fn chain(input: &[u8; N], start: u32, steps: u32, pk_seed: &[u8], adrs: &mut Adr
     tmp
 }
 
-// The WOTS+ message plus its checksum, expanded to LEN base-w digits.
 fn wots_digits(message: &[u8; N]) -> [u32; LEN] {
     let mut digits = [0u32; LEN];
     let base = base_2b(message, LGW, LEN1);
@@ -196,7 +178,6 @@ fn wots_digits(message: &[u8; N]) -> [u32; LEN] {
     digits
 }
 
-// WOTS+ public key: the T hash of all chain endpoints.
 fn wots_pk_gen(sk_seed: &[u8], pk_seed: &[u8], adrs: &mut Adrs) -> [u8; N] {
     let mut sk_adrs = adrs.clone();
     sk_adrs.set_type_and_clear(WOTS_PRF);
@@ -214,7 +195,6 @@ fn wots_pk_gen(sk_seed: &[u8], pk_seed: &[u8], adrs: &mut Adrs) -> [u8; N] {
     hash_n(pk_seed, &pk_adrs, &tmp)
 }
 
-// WOTS+ signature for an n-byte message.
 fn wots_sign(message: &[u8; N], sk_seed: &[u8], pk_seed: &[u8], adrs: &mut Adrs) -> Vec<u8> {
     let digits = wots_digits(message);
     let mut sk_adrs = adrs.clone();
@@ -230,7 +210,6 @@ fn wots_sign(message: &[u8; N], sk_seed: &[u8], pk_seed: &[u8], adrs: &mut Adrs)
     sig
 }
 
-// Recover a WOTS+ public key from a signature.
 fn wots_pk_from_sig(sig: &[u8], message: &[u8; N], pk_seed: &[u8], adrs: &mut Adrs) -> [u8; N] {
     let digits = wots_digits(message);
     let mut tmp = Vec::with_capacity(LEN * N);
@@ -246,7 +225,6 @@ fn wots_pk_from_sig(sig: &[u8], message: &[u8; N], pk_seed: &[u8], adrs: &mut Ad
     hash_n(pk_seed, &pk_adrs, &tmp)
 }
 
-// A node of an XMSS tree at height z and horizontal index i.
 fn xmss_node(sk_seed: &[u8], i: u32, z: u32, pk_seed: &[u8], adrs: &mut Adrs) -> [u8; N] {
     if z == 0 {
         adrs.set_type_and_clear(WOTS_HASH);
@@ -265,7 +243,6 @@ fn xmss_node(sk_seed: &[u8], i: u32, z: u32, pk_seed: &[u8], adrs: &mut Adrs) ->
     }
 }
 
-// An XMSS signature: the WOTS+ signature at the leaf plus the authentication path.
 fn xmss_sign(
     message: &[u8; N],
     sk_seed: &[u8],
@@ -285,7 +262,6 @@ fn xmss_sign(
     sig
 }
 
-// Recover an XMSS root from a signature and the leaf index.
 fn xmss_pk_from_sig(
     idx: u32,
     xmss_sig: &[u8],
@@ -318,7 +294,6 @@ fn xmss_pk_from_sig(
     node
 }
 
-// A single FORS secret value.
 fn fors_sk_gen(sk_seed: &[u8], pk_seed: &[u8], adrs: &Adrs, idx: u32) -> [u8; N] {
     let mut sk_adrs = adrs.clone();
     sk_adrs.set_type_and_clear(FORS_PRF);
@@ -327,7 +302,6 @@ fn fors_sk_gen(sk_seed: &[u8], pk_seed: &[u8], adrs: &Adrs, idx: u32) -> [u8; N]
     prf(pk_seed, sk_seed, &sk_adrs)
 }
 
-// A node of a FORS tree at height z and index i.
 fn fors_node(sk_seed: &[u8], i: u32, z: u32, pk_seed: &[u8], adrs: &mut Adrs) -> [u8; N] {
     if z == 0 {
         let sk = fors_sk_gen(sk_seed, pk_seed, adrs, i);
@@ -346,7 +320,6 @@ fn fors_node(sk_seed: &[u8], i: u32, z: u32, pk_seed: &[u8], adrs: &mut Adrs) ->
     }
 }
 
-// A FORS signature: for each tree, the chosen secret value and its authentication path.
 fn fors_sign(md: &[u8], sk_seed: &[u8], pk_seed: &[u8], adrs: &mut Adrs) -> Vec<u8> {
     let indices = base_2b(md, A, K);
     let mut sig = Vec::with_capacity(FORS_SIG_BYTES);
@@ -369,7 +342,6 @@ fn fors_sign(md: &[u8], sk_seed: &[u8], pk_seed: &[u8], adrs: &mut Adrs) -> Vec<
     sig
 }
 
-// Recover the FORS public key from a signature.
 fn fors_pk_from_sig(sig_fors: &[u8], md: &[u8], pk_seed: &[u8], adrs: &mut Adrs) -> [u8; N] {
     let indices = base_2b(md, A, K);
     let elem = (1 + A) * N;
@@ -404,7 +376,6 @@ fn fors_pk_from_sig(sig_fors: &[u8], md: &[u8], pk_seed: &[u8], adrs: &mut Adrs)
     hash_n(pk_seed, &pk_adrs, &roots)
 }
 
-// A hypertree signature: one XMSS signature per layer, from the bottom up.
 fn ht_sign(
     message: &[u8; N],
     sk_seed: &[u8],
@@ -433,7 +404,6 @@ fn ht_sign(
     sig_ht
 }
 
-// Verify a hypertree signature by climbing to the top root.
 fn ht_verify(
     message: &[u8; N],
     sig_ht: &[u8],
@@ -464,7 +434,6 @@ fn ht_verify(
     node.as_slice() == pk_root
 }
 
-/// Generate a key pair from the three n-byte seeds SK.seed, SK.prf and PK.seed.
 pub fn keygen(
     sk_seed: &[u8; N],
     sk_prf: &[u8; N],
@@ -487,7 +456,6 @@ pub fn keygen(
     (sk, pk)
 }
 
-/// Sign a message with the internal interface (FIPS 205 slh_sign_internal).
 pub fn sign_internal(
     sk: &[u8; SECRET_KEY_BYTES],
     message: &[u8],
@@ -521,7 +489,6 @@ pub fn sign_internal(
     sig
 }
 
-/// Verify a signature with the internal interface (FIPS 205 slh_verify_internal).
 pub fn verify_internal(pk: &[u8; PUBLIC_KEY_BYTES], message: &[u8], sig: &[u8]) -> bool {
     if sig.len() != SIGNATURE_BYTES {
         return false;
@@ -548,7 +515,6 @@ pub fn verify_internal(pk: &[u8; PUBLIC_KEY_BYTES], message: &[u8], sig: &[u8]) 
     ht_verify(&pk_fors, sig_ht, pk_seed, idx_tree, idx_leaf, pk_root)
 }
 
-// Prepend the pure-signature domain separator and context (FIPS 205 sections 10.2, 10.3).
 fn with_context(context: &[u8], message: &[u8]) -> Option<Vec<u8>> {
     if context.len() > 255 {
         return None;
@@ -561,7 +527,6 @@ fn with_context(context: &[u8], message: &[u8]) -> Option<Vec<u8>> {
     Some(framed)
 }
 
-/// Sign a message and context with the external (pure) interface.
 pub fn sign(
     sk: &[u8; SECRET_KEY_BYTES],
     message: &[u8],
@@ -572,7 +537,6 @@ pub fn sign(
     Some(sign_internal(sk, &framed, addrnd))
 }
 
-/// Verify a signature over a message and context with the external (pure) interface.
 pub fn verify(pk: &[u8; PUBLIC_KEY_BYTES], message: &[u8], sig: &[u8], context: &[u8]) -> bool {
     match with_context(context, message) {
         Some(framed) => verify_internal(pk, &framed, sig),
@@ -650,7 +614,6 @@ mod tests {
             let message = hex(&r[0]);
             let sk = secret(&hex(&r[1]));
             let want_sig = hex(&r[2]);
-            // Deterministic signing uses PK.seed as the additional randomness.
             let addrnd = seed(&sk[2 * N..3 * N]);
             let sig = sign_internal(&sk, &message, &addrnd);
             assert_eq!(&sig[..], &want_sig[..], "signature mismatch");
