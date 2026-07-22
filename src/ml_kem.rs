@@ -218,6 +218,10 @@ fn byte_decode_12(data: &[u8]) -> Poly {
     p
 }
 
+fn poly12_canonical(data: &[u8]) -> bool {
+    unpack_bits(data, 12).iter().all(|&c| c < Q)
+}
+
 
 const SHAKE128_RATE: usize = 168;
 
@@ -509,7 +513,15 @@ pub fn decaps(dk: &DecapsKey, c: &Ciphertext) -> SharedSecret {
     shake256(&j_in, &mut k_bar);
 
     let c_prime = kpke_encrypt(ek_pke, &m_prime, r_prime);
-    let keep = ct_eq(&c_prime, c);
+
+    let mut canonical = true;
+    for i in 0..K {
+        canonical = canonical
+            && poly12_canonical(&dk_pke[i * POLY_BYTES..(i + 1) * POLY_BYTES])
+            && poly12_canonical(&ek_pke[i * POLY_BYTES..(i + 1) * POLY_BYTES]);
+    }
+    let canonical_mask = if canonical { 0xffu8 } else { 0x00u8 };
+    let keep = ct_eq(&c_prime, c) & canonical_mask;
 
     let mut shared = [0u8; SHARED_SECRET_BYTES];
     for i in 0..SHARED_SECRET_BYTES {
@@ -611,5 +623,33 @@ mod tests {
         let mut bad = c;
         bad[0] ^= 1;
         assert_ne!(decaps(&dk, &bad), k);
+    }
+
+    #[test]
+    fn decaps_rejects_non_canonical_key() {
+        let recs = records("decaps_768.txt");
+        assert!(!recs.is_empty());
+        let r = &recs[0];
+        let kat_dk = as_array::<DECAPS_KEY_BYTES>(&hex(&r[0]));
+        let kat_c = as_array::<CIPHERTEXT_BYTES>(&hex(&r[1]));
+        let want_k = hex(&r[2]);
+        assert_eq!(&decaps(&kat_dk, &kat_c)[..], &want_k[..]);
+
+        let (ek, dk) = keygen(&[7u8; 32], &[9u8; 32]);
+        let (k, c) = encaps(&ek, &[11u8; 32]);
+        assert_eq!(decaps(&dk, &c), k);
+
+        let mut s0 = unpack_bits(&dk[..POLY_BYTES], 12);
+        let idx = s0
+            .iter()
+            .position(|&x| x + Q <= 4095)
+            .expect("a coefficient small enough to lift exists");
+        s0[idx] += Q;
+        let mut repacked = Vec::with_capacity(POLY_BYTES);
+        pack_bits(&s0, 12, &mut repacked);
+        let mut bad = dk;
+        bad[..POLY_BYTES].copy_from_slice(&repacked);
+
+        assert_ne!(decaps(&bad, &c), k);
     }
 }
