@@ -3,7 +3,7 @@
 use std::hint::black_box;
 use std::time::{Duration, Instant};
 
-use qtv_crypto::{chacha20poly1305, ml_dsa, ml_kem, sha3, slh_dsa, vrf};
+use qtv_crypto::{chacha20poly1305, ml_dsa, ml_kem, sha3, slh_dsa};
 
 fn report(name: &str, iters: u32, elapsed: Duration) {
     let seconds = elapsed.as_secs_f64();
@@ -126,27 +126,6 @@ fn main() {
             black_box(slh_dsa::verify(&slh_pk, &slh_msg, &slh_sig, &slh_ctx));
         }
         report("slh_dsa_verify", iters, start.elapsed());
-    }
-
-    // vrf prove and verify. The proof is a hash-based signature, so proving is slow.
-    let (vrf_sk, vrf_pk) = vrf::keygen(b"quantova throughput benchmark seed");
-    let vrf_input = [204u8; 64];
-    {
-        let iters = 5u32;
-        let start = Instant::now();
-        for _ in 0..iters {
-            black_box(vrf::prove(&vrf_sk, black_box(&vrf_input)));
-        }
-        report("vrf_prove", iters, start.elapsed());
-    }
-    let (vrf_out, vrf_proof) = vrf::prove(&vrf_sk, &vrf_input);
-    {
-        let iters = 100u32;
-        let start = Instant::now();
-        for _ in 0..iters {
-            black_box(vrf::verify(&vrf_pk, &vrf_input, &vrf_out, &vrf_proof));
-        }
-        report("vrf_verify", iters, start.elapsed());
     }
 
     // chacha20poly1305 seal and open on a one kilobyte payload.
