@@ -16,11 +16,10 @@ Q-Crypto is a reference implementation validated against NIST test vectors. It h
 
 Each primitive is implemented in dependency order, and each one gates the next.
 
-- **SHA-3 and SHAKE** (FIPS 202). The Keccak sponge, SHA3-256, SHA3-512, SHAKE128, and SHAKE256. Implemented first because every other primitive and both VRFs build on it.
+- **SHA-3 and SHAKE** (FIPS 202). The Keccak sponge, SHA3-256, SHA3-512, SHAKE128, and SHAKE256. Implemented first because every other primitive builds on it.
 - **ML-DSA-65** (FIPS 204, security category 3). The stack's primary signature scheme, used for account signing, validator attestation, and the virtual machine verify opcode. A 1952 byte public key, a 4032 byte secret key, and a 3309 byte signature. Full number theoretic transform, rejection sampling, bit packing, and the hint mechanism, all hashing through SHAKE.
 - **ML-KEM-768** (FIPS 203, security category 3). Module lattice key encapsulation. It backs the transport key exchange, an ML-KEM plus ML-DSA handshake with no X25519. A 1184 byte encapsulation key, a 2400 byte decapsulation key, and a 1088 byte ciphertext.
 - **SLH-DSA-SHAKE-192s** (FIPS 205, security category 3). Stateless hash based signatures, the conservative option whose security rests on the hash alone. The small parameter set, a 48 byte public key against a 16224 byte signature.
-- **Two post quantum verifiable random functions.** One hash based on SLH-DSA, one lattice based on ML-DSA, on a shared interface. Both are deterministic signature functions reduced through SHAKE256 to a fixed 32 byte output, so the output is a fixed function of the key and input and is bound to the key by unforgeability. Both are kept, and the throughput benchmark decides which one consensus defaults to. No elliptic curve VRF is representable.
 - **ChaCha20-Poly1305** (RFC 8439). The single 256 bit symmetric AEAD the crypto policy permits, used by the transport. It stands alone and depends on nothing else in the crate.
 
 FN-DSA (FIPS 206) is present but feature flagged off behind `fn-dsa`, and it stays off until the standard is published in final form and the cryptographic transition track admits it.
@@ -33,11 +32,11 @@ cargo deny check
 cargo bench
 ```
 
-The suite carries 48 tests. The signature and KEM schemes are checked end to end against the official NIST vectors committed under `vectors/`, keygen and sign and verify for ML-DSA, keygen and encaps and decaps for ML-KEM, the SLH-DSA vectors, the SHA-3 and SHAKE known answers, and the RFC 8439 vectors for the AEAD, alongside rejection tests that a tampered ciphertext, tag, nonce, or key fails to open. `benches/throughput.rs` measures per operation timing, and those numbers calibrate the gas schedule for the native crypto opcodes and the validator resource budget.
+The signature and KEM schemes are checked end to end against the official NIST vectors committed under `vectors/`, keygen and sign and verify for ML-DSA, keygen and encaps and decaps for ML-KEM, the SLH-DSA vectors, the SHA-3 and SHAKE known answers, and the RFC 8439 vectors for the AEAD, alongside rejection tests that a tampered ciphertext, tag, nonce, or key fails to open.
 
 ## Where it sits in the stack
 
-Every other repository depends on this crate, pinned by git tag rather than a registry version. The QVM verify and hash and KEM opcodes call these primitives directly. Quantova-Chain signs accounts and transactions with ML-DSA and runs its transport handshake on ML-KEM. QORUS aggregates validator attestations over ML-DSA and derives its committee sortition and randomness beacon from SHA-3 and SHAKE, and the QVM `VRF_VERIFY` opcode checks the verifiable random function outputs. The address format commits to an ML-DSA public key, never to a truncated hash of an elliptic curve key.
+Every other repository depends on this crate, pinned by git tag rather than a registry version. The QVM verify and hash and KEM opcodes call these primitives directly. Quantova-Chain signs accounts and transactions with ML-DSA and runs its transport handshake on ML-KEM. QORUS aggregates validator attestations over ML-DSA and derives its committee sortition and randomness beacon from SHA-3 and SHAKE. The address format commits to an ML-DSA public key, never to a truncated hash of an elliptic curve key.
 
 ## Status
 

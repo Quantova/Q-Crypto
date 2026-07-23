@@ -8,5 +8,3 @@ ml_kem_decaps              32.885 us/op         30408.74 ops/s
 slh_dsa_keygen         124138.692 us/op             8.06 ops/s
 slh_dsa_sign          1208006.967 us/op             0.83 ops/s
 slh_dsa_verify            977.930 us/op          1022.57 ops/s
-vrf_prove             1391313.025 us/op             0.72 ops/s
-vrf_verify                959.756 us/op          1041.93 ops/s
