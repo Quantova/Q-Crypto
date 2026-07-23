@@ -1,5 +1,6 @@
 
 use crate::sha3::{shake128, shake256};
+use crate::zeroize::{Zeroize, Zeroizing};
 
 const Q: i32 = 8380417; // prime modulus, 2^23 - 2^13 + 1
 const N: usize = 256; // ring degree
@@ -485,6 +486,29 @@ struct SecretComponents {
     t0: Vec<Poly>,
 }
 
+impl Drop for SecretComponents {
+    fn drop(&mut self) {
+        self.rho[..].zeroize();
+        self.key[..].zeroize();
+        self.tr[..].zeroize();
+        for poly in self.s1.iter_mut() {
+            poly[..].zeroize();
+        }
+        for poly in self.s2.iter_mut() {
+            poly[..].zeroize();
+        }
+        for poly in self.t0.iter_mut() {
+            poly[..].zeroize();
+        }
+    }
+}
+
+impl core::fmt::Debug for SecretComponents {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str("SecretComponents(redacted)")
+    }
+}
+
 fn sk_decode(sk: &SecretKey) -> SecretComponents {
     let mut rho = [0u8; 32];
     rho.copy_from_slice(&sk[..32]);
@@ -624,7 +648,8 @@ pub fn keygen(seed: &[u8; SEED_BYTES]) -> (PublicKey, SecretKey) {
     h_in.extend_from_slice(seed);
     h_in.push(K as u8);
     h_in.push(L as u8);
-    let expanded = shake256_bytes(&h_in, 128);
+    let h_in = Zeroizing::new(h_in);
+    let expanded = Zeroizing::new(shake256_bytes(&h_in, 128));
     let rho = &expanded[..32];
     let rho_prime = &expanded[32..96];
     let key = &expanded[96..128];
@@ -1071,5 +1096,24 @@ mod tests {
         assert!(verify(&pk, message, &sig, context));
         assert!(!verify(&pk, b"other message", &sig, context));
         assert!(!verify(&pk, message, &sig, b"other ctx"));
+    }
+
+    #[test]
+    fn sign_internal_is_deterministic_for_fixed_inputs() {
+        let seed = [11u8; 32];
+        let (_, sk) = keygen(&seed);
+        let message = b"quantova determinism";
+        let rnd = [4u8; 32];
+        let first = sign_internal(&sk, message, &rnd);
+        let second = sign_internal(&sk, message, &rnd);
+        assert_eq!(&first[..], &second[..]);
+    }
+
+    #[test]
+    fn secret_components_debug_is_redacted() {
+        let seed = [1u8; 32];
+        let (_, sk) = keygen(&seed);
+        let components = sk_decode(&sk);
+        assert_eq!(format!("{:?}", components), "SecretComponents(redacted)");
     }
 }

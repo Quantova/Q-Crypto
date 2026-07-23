@@ -1,5 +1,6 @@
 
 use crate::sha3::{sha3_256, sha3_512, shake128, shake256};
+use crate::zeroize::Zeroizing;
 
 const Q: i32 = 3329; // prime modulus, 13 * 2^8 + 1
 const N: usize = 256; // ring degree
@@ -300,7 +301,8 @@ fn kpke_keygen(d: &[u8]) -> (Vec<u8>, Vec<u8>) {
     let mut g_in = Vec::with_capacity(33);
     g_in.extend_from_slice(d);
     g_in.push(K as u8);
-    let g = sha3_512(&g_in);
+    let g_in = Zeroizing::new(g_in);
+    let g = Zeroizing::new(sha3_512(&g_in));
     let rho = &g[..32];
     let sigma = &g[32..];
 
@@ -479,7 +481,8 @@ pub fn encaps(ek: &EncapsKey, m: &[u8; SEED_BYTES]) -> (SharedSecret, Ciphertext
     let mut g_in = Vec::with_capacity(64);
     g_in.extend_from_slice(m);
     g_in.extend_from_slice(&sha3_256(ek));
-    let g = sha3_512(&g_in);
+    let g_in = Zeroizing::new(g_in);
+    let g = Zeroizing::new(sha3_512(&g_in));
 
     let mut shared = [0u8; SHARED_SECRET_BYTES];
     shared.copy_from_slice(&g[..32]);
@@ -501,7 +504,8 @@ pub fn decaps(dk: &DecapsKey, c: &Ciphertext) -> SharedSecret {
     let mut g_in = Vec::with_capacity(64);
     g_in.extend_from_slice(&m_prime);
     g_in.extend_from_slice(h);
-    let g = sha3_512(&g_in);
+    let g_in = Zeroizing::new(g_in);
+    let g = Zeroizing::new(sha3_512(&g_in));
     let mut k_prime = [0u8; SHARED_SECRET_BYTES];
     k_prime.copy_from_slice(&g[..32]);
     let r_prime = &g[32..];
@@ -651,5 +655,15 @@ mod tests {
         bad[..POLY_BYTES].copy_from_slice(&repacked);
 
         assert_ne!(decaps(&bad, &c), k);
+    }
+
+    #[test]
+    fn keygen_is_deterministic_for_fixed_seeds() {
+        let d = [3u8; 32];
+        let z = [5u8; 32];
+        let first = keygen(&d, &z);
+        let second = keygen(&d, &z);
+        assert_eq!(&first.0[..], &second.0[..]);
+        assert_eq!(&first.1[..], &second.1[..]);
     }
 }

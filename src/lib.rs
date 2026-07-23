@@ -7,5 +7,7 @@ pub mod ml_kem;
 pub mod sha3;
 pub mod slh_dsa;
 
+mod zeroize;
+
 #[cfg(feature = "fn-dsa")]
 pub mod fn_dsa;
