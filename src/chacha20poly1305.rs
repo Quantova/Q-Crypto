@@ -1,3 +1,5 @@
+use crate::zeroize::Zeroizing;
+
 pub const KEY_BYTES: usize = 32;
 pub const NONCE_BYTES: usize = 12;
 pub const TAG_BYTES: usize = 16;
@@ -365,7 +367,7 @@ pub fn seal(
     aad: &[u8],
     plaintext: &[u8],
 ) -> (Vec<u8>, [u8; TAG_BYTES]) {
-    let otk = poly1305_key_gen(key, nonce);
+    let otk = Zeroizing::new(poly1305_key_gen(key, nonce));
     let mut ciphertext = plaintext.to_vec();
     chacha20(key, 1, nonce, &mut ciphertext);
     let tag = poly1305(&otk, &mac_data(aad, &ciphertext));
@@ -379,7 +381,7 @@ pub fn open(
     ciphertext: &[u8],
     tag: &[u8; TAG_BYTES],
 ) -> Option<Vec<u8>> {
-    let otk = poly1305_key_gen(key, nonce);
+    let otk = Zeroizing::new(poly1305_key_gen(key, nonce));
     let expected = poly1305(&otk, &mac_data(aad, ciphertext));
     if !constant_time_eq(&expected, tag) {
         return None;
@@ -598,5 +600,14 @@ mod tests {
         let mut key = v.key;
         key[0] ^= 1;
         assert!(open(&key, &v.nonce, &v.aad, &v.ciphertext, &v.tag).is_none());
+    }
+
+    #[test]
+    fn seal_is_stable_for_fixed_inputs() {
+        let v = aead_vector();
+        let first = seal(&v.key, &v.nonce, &v.aad, &v.plaintext);
+        let second = seal(&v.key, &v.nonce, &v.aad, &v.plaintext);
+        assert_eq!(first.0, second.0);
+        assert_eq!(first.1, second.1);
     }
 }

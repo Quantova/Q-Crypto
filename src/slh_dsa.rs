@@ -1,5 +1,6 @@
 
 use crate::sha3::shake256;
+use crate::zeroize::Zeroize;
 
 const N: usize = 24; // security parameter in bytes
 const H: usize = 63; // total hypertree height
@@ -91,6 +92,7 @@ fn prf(pk_seed: &[u8], sk_seed: &[u8], adrs: &Adrs) -> [u8; N] {
     input[N + 32..].copy_from_slice(sk_seed);
     let mut out = [0u8; N];
     shake256(&input, &mut out);
+    input[..].zeroize();
     out
 }
 
@@ -111,6 +113,7 @@ fn prf_msg(sk_prf: &[u8], opt_rand: &[u8], message: &[u8]) -> [u8; N] {
     input.extend_from_slice(message);
     let mut out = [0u8; N];
     shake256(&input, &mut out);
+    input[..].zeroize();
     out
 }
 
@@ -672,5 +675,27 @@ mod tests {
         assert!(verify(&pk, message, &sig, context));
         assert!(!verify(&pk, b"other message", &sig, context));
         assert!(!verify(&pk, message, &sig, b"other context"));
+    }
+
+    #[test]
+    fn sign_internal_is_deterministic_for_fixed_inputs() {
+        let (sk, _) = keygen(&[1u8; N], &[2u8; N], &[3u8; N]);
+        let message = b"quantova determinism";
+        let addrnd = [9u8; N];
+        let first = sign_internal(&sk, message, &addrnd);
+        let second = sign_internal(&sk, message, &addrnd);
+        assert_eq!(&first[..], &second[..]);
+    }
+
+    #[test]
+    fn address_type_tags_are_distinct() {
+        let tags = [
+            WOTS_HASH, WOTS_PK, TREE, FORS_TREE, FORS_ROOTS, WOTS_PRF, FORS_PRF,
+        ];
+        for i in 0..tags.len() {
+            for j in (i + 1)..tags.len() {
+                assert_ne!(tags[i], tags[j], "address type tags must be distinct");
+            }
+        }
     }
 }
