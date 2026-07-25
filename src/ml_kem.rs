@@ -1,3 +1,6 @@
+// Copyright 2026 Quantova Inc
+// SPDX-License-Identifier: Apache-2.0 OR MIT
+
 
 use crate::sha3::{sha3_256, sha3_512, shake128, shake256};
 use crate::zeroize::Zeroizing;

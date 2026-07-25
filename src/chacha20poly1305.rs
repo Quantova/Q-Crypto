@@ -1,3 +1,6 @@
+// Copyright 2026 Quantova Inc
+// SPDX-License-Identifier: Apache-2.0 OR MIT
+
 use crate::zeroize::Zeroizing;
 
 pub const KEY_BYTES: usize = 32;
