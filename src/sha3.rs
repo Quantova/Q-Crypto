@@ -138,11 +138,28 @@ pub fn shake256(input: &[u8], output: &mut [u8]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
+    use std::path::PathBuf;
 
     fn hex(s: &str) -> Vec<u8> {
+        if s == "-" {
+            return Vec::new();
+        }
         assert!(s.len() % 2 == 0);
         (0..s.len() / 2)
             .map(|i| u8::from_str_radix(&s[2 * i..2 * i + 2], 16).unwrap())
+            .collect()
+    }
+
+    fn records(name: &str) -> Vec<Vec<String>> {
+        let mut path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        path.push("vectors/sha3");
+        path.push(name);
+        fs::read_to_string(path)
+            .unwrap()
+            .lines()
+            .filter(|l| !l.is_empty() && !l.starts_with('#'))
+            .map(|l| l.split_whitespace().map(|s| s.to_string()).collect())
             .collect()
     }
 
@@ -221,5 +238,55 @@ mod tests {
             fips[..],
             hex("c5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470")[..]
         );
+    }
+
+    #[test]
+    fn sha3_256_matches_cavp_vectors() {
+        let recs = records("sha3_256.txt");
+        assert!(!recs.is_empty());
+        for r in &recs {
+            let msg = hex(&r[0]);
+            let want = hex(&r[1]);
+            assert_eq!(&sha3_256(&msg)[..], &want[..], "SHA3-256 mismatch");
+        }
+    }
+
+    #[test]
+    fn sha3_512_matches_cavp_vectors() {
+        let recs = records("sha3_512.txt");
+        assert!(!recs.is_empty());
+        for r in &recs {
+            let msg = hex(&r[0]);
+            let want = hex(&r[1]);
+            assert_eq!(&sha3_512(&msg)[..], &want[..], "SHA3-512 mismatch");
+        }
+    }
+
+    #[test]
+    fn shake128_matches_cavp_vectors() {
+        let recs = records("shake128.txt");
+        assert!(!recs.is_empty());
+        for r in &recs {
+            let msg = hex(&r[0]);
+            let outlen: usize = r[1].parse().unwrap();
+            let want = hex(&r[2]);
+            let mut out = vec![0u8; outlen];
+            shake128(&msg, &mut out);
+            assert_eq!(out, want, "SHAKE128 mismatch");
+        }
+    }
+
+    #[test]
+    fn shake256_matches_cavp_vectors() {
+        let recs = records("shake256.txt");
+        assert!(!recs.is_empty());
+        for r in &recs {
+            let msg = hex(&r[0]);
+            let outlen: usize = r[1].parse().unwrap();
+            let want = hex(&r[2]);
+            let mut out = vec![0u8; outlen];
+            shake256(&msg, &mut out);
+            assert_eq!(out, want, "SHAKE256 mismatch");
+        }
     }
 }
