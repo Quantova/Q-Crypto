@@ -1,8 +1,6 @@
 # Q-Crypto
 
-Quantova is a sovereign post quantum Layer 1, built from scratch, sharing no code, no wire format, and no trust assumption with any other chain. It is post quantum end to end, not a classical chain with a post quantum signature bolted on. Every layer is its own, and every layer stands on NIST standardized schemes with no classical escape hatch anywhere.
-
-Q-Crypto is that cryptographic floor. It is the only cryptography in the organization. Every signature the chain checks, every key exchange the transport runs, every committee draw the consensus samples, and every crypto opcode the virtual machine executes calls into this one crate. There is no second implementation and no vendored library behind it.
+Q-Crypto is the cryptographic floor of Quantova, a sovereign post quantum Layer 1 built from scratch with no classical escape hatch anywhere. It is the only cryptography in the organization. Every signature the chain checks, every key exchange the transport runs, every committee draw the consensus samples, and every crypto opcode the virtual machine executes calls into this one crate. There is no second implementation and no vendored library behind it.
 
 ## What it is
 
