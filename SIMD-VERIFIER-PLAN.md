@@ -4,7 +4,7 @@ The plan for the focused, reviewed effort on the `simd-verifier` branch. The goa
 
 ## What we are speeding up, measured
 
-Profiled on rack04, a verify splits almost evenly:
+Profiled on our reference hardware, a verify splits almost evenly:
 
 - **expand_a, about half.** Rebuilds the public matrix from the key with SHAKE128, which is thirty independent Keccak streams per verify.
 - **the transform, about half.** Twelve forward and six inverse number theoretic transforms plus thirty six pointwise products.
@@ -36,7 +36,7 @@ Verification runs only on public data, the public key, the signature, and the me
 
 ## Expected gain
 
-On the SSE only 2012 Sandy Bridge racks, about 2x on verify, which takes execution past 25k. On a modern AVX2 or AVX-512 validator the same code is four to eight times wider and clears it comfortably. The vectorised paths are additive, the scalar reference remains for correctness and for machines without the features.
+On older SSE only hosts the vectorised verify is meaningfully faster, and on a modern AVX2 or AVX-512 validator the same code is several times wider again. The vectorised paths are additive, the scalar reference remains for correctness and for machines without the features.
 
 ## Review checklist
 
