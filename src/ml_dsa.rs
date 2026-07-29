@@ -43,21 +43,13 @@ const SHAKE256_RATE: usize = 136;
 
 
 fn add_q(a: i32, b: i32) -> i32 {
-    let r = a + b;
-    if r >= Q {
-        r - Q
-    } else {
-        r
-    }
+    let r = a + b - Q;
+    r + ((r >> 31) & Q)
 }
 
 fn sub_q(a: i32, b: i32) -> i32 {
     let r = a - b;
-    if r < 0 {
-        r + Q
-    } else {
-        r
-    }
+    r + ((r >> 31) & Q)
 }
 
 fn mul_q(a: i32, b: i32) -> i32 {
@@ -65,19 +57,12 @@ fn mul_q(a: i32, b: i32) -> i32 {
 }
 
 fn to_pos(a: i32) -> i32 {
-    if a < 0 {
-        a + Q
-    } else {
-        a
-    }
+    a + ((a >> 31) & Q)
 }
 
 fn center(a: i32) -> i32 {
-    if a > (Q - 1) / 2 {
-        a - Q
-    } else {
-        a
-    }
+    let mask = ((Q - 1) / 2 - a) >> 31;
+    a - (mask & Q)
 }
 
 fn inf_norm(p: &Poly) -> i32 {

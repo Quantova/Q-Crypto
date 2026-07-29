@@ -32,21 +32,13 @@ const ZERO_POLY: Poly = [0i32; N];
 
 
 fn add_q(a: i32, b: i32) -> i32 {
-    let r = a + b;
-    if r >= Q {
-        r - Q
-    } else {
-        r
-    }
+    let r = a + b - Q;
+    r + ((r >> 31) & Q)
 }
 
 fn sub_q(a: i32, b: i32) -> i32 {
     let r = a - b;
-    if r < 0 {
-        r + Q
-    } else {
-        r
-    }
+    r + ((r >> 31) & Q)
 }
 
 fn mul_q(a: i32, b: i32) -> i32 {
