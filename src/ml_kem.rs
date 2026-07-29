@@ -3,7 +3,7 @@
 
 
 use crate::sha3::{sha3_256, sha3_512, shake128, shake256};
-use crate::zeroize::Zeroizing;
+use crate::zeroize::{Zeroize, Zeroizing};
 
 const Q: i32 = 3329; // prime modulus, 13 * 2^8 + 1
 const N: usize = 256; // ring degree
@@ -314,12 +314,14 @@ fn kpke_keygen(d: &[u8]) -> (Vec<u8>, Vec<u8>) {
     let mut nonce = 0u8;
     let mut s = vec![ZERO_POLY; K];
     for poly in s.iter_mut() {
-        *poly = sample_poly_cbd(&prf(ETA1, sigma, nonce), ETA1);
+        let pr = Zeroizing::new(prf(ETA1, sigma, nonce));
+        *poly = sample_poly_cbd(&pr, ETA1);
         nonce += 1;
     }
     let mut e = vec![ZERO_POLY; K];
     for poly in e.iter_mut() {
-        *poly = sample_poly_cbd(&prf(ETA1, sigma, nonce), ETA1);
+        let pr = Zeroizing::new(prf(ETA1, sigma, nonce));
+        *poly = sample_poly_cbd(&pr, ETA1);
         nonce += 1;
     }
     for poly in s.iter_mut() {
@@ -350,6 +352,10 @@ fn kpke_keygen(d: &[u8]) -> (Vec<u8>, Vec<u8>) {
     for poly in s.iter() {
         pack_bits(poly, 12, &mut dk);
     }
+
+    for poly in s.iter_mut().chain(e.iter_mut()) {
+        poly[..].zeroize();
+    }
     (ek, dk)
 }
 
@@ -364,15 +370,17 @@ fn kpke_encrypt(ek: &[u8], m: &[u8], r: &[u8]) -> Vec<u8> {
     let mut nonce = 0u8;
     let mut y = vec![ZERO_POLY; K];
     for poly in y.iter_mut() {
-        *poly = sample_poly_cbd(&prf(ETA1, r, nonce), ETA1);
+        let pr = Zeroizing::new(prf(ETA1, r, nonce));
+        *poly = sample_poly_cbd(&pr, ETA1);
         nonce += 1;
     }
     let mut e1 = vec![ZERO_POLY; K];
     for poly in e1.iter_mut() {
-        *poly = sample_poly_cbd(&prf(ETA2, r, nonce), ETA2);
+        let pr = Zeroizing::new(prf(ETA2, r, nonce));
+        *poly = sample_poly_cbd(&pr, ETA2);
         nonce += 1;
     }
-    let e2 = sample_poly_cbd(&prf(ETA2, r, nonce), ETA2);
+    let mut e2 = sample_poly_cbd(&Zeroizing::new(prf(ETA2, r, nonce)), ETA2);
 
     for poly in y.iter_mut() {
         ntt(poly);
@@ -395,7 +403,7 @@ fn kpke_encrypt(ek: &[u8], m: &[u8], r: &[u8]) -> Vec<u8> {
         pointwise_acc(&mut acc, &t[i], &y[i]);
     }
     inv_ntt(&mut acc);
-    let mu = unpack_bits(m, 1);
+    let mut mu = unpack_bits(m, 1);
     let mut v = ZERO_POLY;
     for n in 0..N {
         v[n] = add_q(add_q(acc[n], e2[n]), decompress(mu[n], 1));
@@ -414,6 +422,12 @@ fn kpke_encrypt(ek: &[u8], m: &[u8], r: &[u8]) -> Vec<u8> {
         comp[n] = compress(v[n], DV);
     }
     pack_bits(&comp, DV, &mut c);
+
+    for poly in y.iter_mut().chain(e1.iter_mut()) {
+        poly[..].zeroize();
+    }
+    e2[..].zeroize();
+    mu[..].zeroize();
     c
 }
 
@@ -452,6 +466,12 @@ fn kpke_decrypt(dk: &[u8], c: &[u8]) -> Vec<u8> {
     }
     let mut out = Vec::with_capacity(32);
     pack_bits(&w, 1, &mut out);
+
+    for poly in s.iter_mut() {
+        poly[..].zeroize();
+    }
+    acc[..].zeroize();
+    w[..].zeroize();
     out
 }
 
@@ -465,6 +485,7 @@ fn ct_eq(a: &[u8], b: &[u8]) -> u8 {
 
 pub fn keygen(d: &[u8; SEED_BYTES], z: &[u8; SEED_BYTES]) -> (EncapsKey, DecapsKey) {
     let (ek_pke, dk_pke) = kpke_keygen(d);
+    let dk_pke = Zeroizing::new(dk_pke);
 
     let mut ek = [0u8; ENCAPS_KEY_BYTES];
     ek.copy_from_slice(&ek_pke);
@@ -474,6 +495,7 @@ pub fn keygen(d: &[u8; SEED_BYTES], z: &[u8; SEED_BYTES]) -> (EncapsKey, DecapsK
     dk.extend_from_slice(&ek_pke);
     dk.extend_from_slice(&sha3_256(&ek_pke));
     dk.extend_from_slice(z);
+    let dk = Zeroizing::new(dk);
 
     let mut dk_arr = [0u8; DECAPS_KEY_BYTES];
     dk_arr.copy_from_slice(&dk);
@@ -502,7 +524,7 @@ pub fn decaps(dk: &DecapsKey, c: &Ciphertext) -> SharedSecret {
     let h = &dk[2 * K * POLY_BYTES + 32..2 * K * POLY_BYTES + 64];
     let z = &dk[2 * K * POLY_BYTES + 64..2 * K * POLY_BYTES + 96];
 
-    let m_prime = kpke_decrypt(dk_pke, c);
+    let m_prime = Zeroizing::new(kpke_decrypt(dk_pke, c));
 
     let mut g_in = Vec::with_capacity(64);
     g_in.extend_from_slice(&m_prime);
@@ -534,6 +556,8 @@ pub fn decaps(dk: &DecapsKey, c: &Ciphertext) -> SharedSecret {
     for i in 0..SHARED_SECRET_BYTES {
         shared[i] = (keep & k_prime[i]) | (!keep & k_bar[i]);
     }
+    k_prime[..].zeroize();
+    k_bar[..].zeroize();
     shared
 }
 

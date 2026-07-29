@@ -3,7 +3,7 @@
 
 
 use crate::sha3::{shake128, shake256};
-use crate::zeroize::{Zeroize, Zeroizing};
+use crate::zeroize::{SecretPolys, Zeroize, Zeroizing};
 
 const Q: i32 = 8380417; // prime modulus, 2^23 - 2^13 + 1
 const N: usize = 256; // ring degree
@@ -365,6 +365,7 @@ fn expand_s(rho_prime: &[u8]) -> (Vec<Poly>, Vec<Poly>) {
         seed[65] = (idx >> 8) as u8;
         s2[i] = rej_bounded_poly(&seed);
     }
+    seed[..].zeroize();
     (s1, s2)
 }
 
@@ -376,12 +377,14 @@ fn expand_mask(rho_pp: &[u8], kappa: usize) -> Vec<Poly> {
         let idx = (kappa + r) as u16;
         seed[64] = (idx & 255) as u8;
         seed[65] = (idx >> 8) as u8;
-        let v = shake256_bytes(&seed, 32 * 20);
-        let raw = unpack_bits(&v, 20);
+        let v = Zeroizing::new(shake256_bytes(&seed, 32 * 20));
+        let mut raw = unpack_bits(&v, 20);
         for i in 0..N {
             y[r][i] = to_pos(GAMMA1 - raw[i]);
         }
+        raw[..].zeroize();
     }
+    seed[..].zeroize();
     y
 }
 
@@ -658,7 +661,7 @@ pub fn keygen(seed: &[u8; SEED_BYTES]) -> (PublicKey, SecretKey) {
     let key = &expanded[96..128];
 
     let a = expand_a(rho);
-    let (s1, s2) = expand_s(rho_prime);
+    let (mut s1, mut s2) = expand_s(rho_prime);
 
     let mut s1_hat = s1.clone();
     for poly in s1_hat.iter_mut() {
@@ -687,6 +690,13 @@ pub fn keygen(seed: &[u8; SEED_BYTES]) -> (PublicKey, SecretKey) {
     let pk = pk_encode(rho, &t1);
     let tr = shake256_bytes(&pk, 64);
     let sk = sk_encode(rho, key, &tr, &s1, &s2, &t0);
+
+    for poly in s1.iter_mut().chain(s2.iter_mut()).chain(s1_hat.iter_mut()) {
+        poly[..].zeroize();
+    }
+    for poly in t0.iter_mut() {
+        poly[..].zeroize();
+    }
     (pk, sk)
 }
 
@@ -694,21 +704,21 @@ fn sign_with_mu(sk: &SecretKey, mu: &[u8], rnd: &[u8; 32]) -> Signature {
     let sc = sk_decode(sk);
     let a = expand_a(&sc.rho);
 
-    let mut s1_hat = sc.s1.clone();
+    let mut s1_hat = SecretPolys::new(sc.s1.clone());
     for poly in s1_hat.iter_mut() {
         for c in poly.iter_mut() {
             *c = to_pos(*c);
         }
         ntt(poly);
     }
-    let mut s2_hat = sc.s2.clone();
+    let mut s2_hat = SecretPolys::new(sc.s2.clone());
     for poly in s2_hat.iter_mut() {
         for c in poly.iter_mut() {
             *c = to_pos(*c);
         }
         ntt(poly);
     }
-    let mut t0_hat = sc.t0.clone();
+    let mut t0_hat = SecretPolys::new(sc.t0.clone());
     for poly in t0_hat.iter_mut() {
         for c in poly.iter_mut() {
             *c = to_pos(*c);
@@ -720,14 +730,15 @@ fn sign_with_mu(sk: &SecretKey, mu: &[u8], rnd: &[u8; 32]) -> Signature {
     seed.extend_from_slice(&sc.key);
     seed.extend_from_slice(rnd);
     seed.extend_from_slice(mu);
-    let rho_pp = shake256_bytes(&seed, 64);
+    let seed = Zeroizing::new(seed);
+    let rho_pp = Zeroizing::new(shake256_bytes(&seed, 64));
 
     let mut kappa = 0usize;
     loop {
-        let y = expand_mask(&rho_pp, kappa);
+        let y = SecretPolys::new(expand_mask(&rho_pp, kappa));
         kappa += L;
 
-        let mut y_hat = y.clone();
+        let mut y_hat = SecretPolys::new(y.clone());
         for poly in y_hat.iter_mut() {
             ntt(poly);
         }
@@ -753,7 +764,7 @@ fn sign_with_mu(sk: &SecretKey, mu: &[u8], rnd: &[u8; 32]) -> Signature {
         let mut c_hat = c;
         ntt(&mut c_hat);
 
-        let mut z = vec![ZERO_POLY; L];
+        let mut z = SecretPolys::new(vec![ZERO_POLY; L]);
         for j in 0..L {
             let mut cs1 = ZERO_POLY;
             pointwise_acc(&mut cs1, &c_hat, &s1_hat[j]);
@@ -761,13 +772,14 @@ fn sign_with_mu(sk: &SecretKey, mu: &[u8], rnd: &[u8; 32]) -> Signature {
             for n in 0..N {
                 z[j][n] = add_q(y[j][n], cs1[n]);
             }
+            cs1[..].zeroize();
         }
         let mut z_norm = 0i32;
         for poly in z.iter() {
             z_norm = z_norm.max(inf_norm(poly));
         }
 
-        let mut cs2 = vec![ZERO_POLY; K];
+        let mut cs2 = SecretPolys::new(vec![ZERO_POLY; K]);
         let mut r0_norm = 0i32;
         for i in 0..K {
             let mut acc = ZERO_POLY;
@@ -796,6 +808,7 @@ fn sign_with_mu(sk: &SecretKey, mu: &[u8], rnd: &[u8; 32]) -> Signature {
                 let r = add_q(sub_q(w[i][n], cs2[i][n]), ct0[n]);
                 h[i][n] = make_hint(neg_ct0, r) as i32;
             }
+            ct0[..].zeroize();
         }
 
         if ct0_norm >= GAMMA2 || hint_weight(&h) > OMEGA {

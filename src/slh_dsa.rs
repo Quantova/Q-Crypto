@@ -191,9 +191,10 @@ fn wots_pk_gen(sk_seed: &[u8], pk_seed: &[u8], adrs: &mut Adrs) -> [u8; N] {
     let mut tmp = Vec::with_capacity(LEN * N);
     for i in 0..LEN {
         sk_adrs.set_chain(i as u32);
-        let sk = prf(pk_seed, sk_seed, &sk_adrs);
+        let mut sk = prf(pk_seed, sk_seed, &sk_adrs);
         adrs.set_chain(i as u32);
         tmp.extend_from_slice(&chain(&sk, 0, W - 1, pk_seed, adrs));
+        sk[..].zeroize();
     }
     let mut pk_adrs = adrs.clone();
     pk_adrs.set_type_and_clear(WOTS_PK);
@@ -209,9 +210,10 @@ fn wots_sign(message: &[u8; N], sk_seed: &[u8], pk_seed: &[u8], adrs: &mut Adrs)
     let mut sig = Vec::with_capacity(LEN * N);
     for i in 0..LEN {
         sk_adrs.set_chain(i as u32);
-        let sk = prf(pk_seed, sk_seed, &sk_adrs);
+        let mut sk = prf(pk_seed, sk_seed, &sk_adrs);
         adrs.set_chain(i as u32);
         sig.extend_from_slice(&chain(&sk, 0, digits[i], pk_seed, adrs));
+        sk[..].zeroize();
     }
     sig
 }
@@ -310,10 +312,12 @@ fn fors_sk_gen(sk_seed: &[u8], pk_seed: &[u8], adrs: &Adrs, idx: u32) -> [u8; N]
 
 fn fors_node(sk_seed: &[u8], i: u32, z: u32, pk_seed: &[u8], adrs: &mut Adrs) -> [u8; N] {
     if z == 0 {
-        let sk = fors_sk_gen(sk_seed, pk_seed, adrs, i);
+        let mut sk = fors_sk_gen(sk_seed, pk_seed, adrs, i);
         adrs.set_tree_height(0);
         adrs.set_tree_index(i);
-        hash_n(pk_seed, adrs, &sk)
+        let leaf = hash_n(pk_seed, adrs, &sk);
+        sk[..].zeroize();
+        leaf
     } else {
         let left = fors_node(sk_seed, 2 * i, z - 1, pk_seed, adrs);
         let right = fors_node(sk_seed, 2 * i + 1, z - 1, pk_seed, adrs);
