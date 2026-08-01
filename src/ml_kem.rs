@@ -270,6 +270,7 @@ fn prf(eta: usize, seed: &[u8], nonce: u8) -> Vec<u8> {
     input.push(nonce);
     let mut out = vec![0u8; 64 * eta];
     shake256(&input, &mut out);
+    input[..].zeroize();
     out
 }
 
@@ -538,8 +539,9 @@ pub fn decaps(dk: &DecapsKey, c: &Ciphertext) -> SharedSecret {
     j_in.extend_from_slice(c);
     let mut k_bar = [0u8; SHARED_SECRET_BYTES];
     shake256(&j_in, &mut k_bar);
+    j_in[..].zeroize();
 
-    let c_prime = kpke_encrypt(ek_pke, &m_prime, r_prime);
+    let mut c_prime = kpke_encrypt(ek_pke, &m_prime, r_prime);
 
     let mut canonical = true;
     for i in 0..K {
@@ -548,12 +550,14 @@ pub fn decaps(dk: &DecapsKey, c: &Ciphertext) -> SharedSecret {
             && poly12_canonical(&ek_pke[i * POLY_BYTES..(i + 1) * POLY_BYTES]);
     }
     let canonical_mask = if canonical { 0xffu8 } else { 0x00u8 };
-    let keep = ct_eq(&c_prime, c) & canonical_mask;
+    let h_check = sha3_256(ek_pke);
+    let keep = ct_eq(&c_prime, c) & canonical_mask & ct_eq(&h_check, h);
 
     let mut shared = [0u8; SHARED_SECRET_BYTES];
     for i in 0..SHARED_SECRET_BYTES {
         shared[i] = (keep & k_prime[i]) | (!keep & k_bar[i]);
     }
+    c_prime[..].zeroize();
     k_prime[..].zeroize();
     k_bar[..].zeroize();
     shared
@@ -755,6 +759,34 @@ mod tests {
 
         let (_ek2, dk2) = keygen(&[0x31u8; 32], &[0x99u8; 32]);
         assert_ne!(decaps(&dk, &c0), decaps(&dk2, &c0), "rejection secret binds the z seed");
+    }
+
+    #[test]
+    fn decaps_rejects_a_dk_whose_stored_hash_does_not_match_ek() {
+        let (ek, dk) = keygen(&[0x51u8; 32], &[0x52u8; 32]);
+        let (k, c) = encaps(&ek, &[0x53u8; 32]).expect("a fresh key is canonical");
+        assert_eq!(decaps(&dk, &c), k, "the honest ciphertext recovers the secret");
+
+        let h_off = 2 * K * POLY_BYTES + 32;
+        let mut dk_bad = dk;
+        dk_bad[h_off] ^= 0x01;
+
+        let m = [0x77u8; 32];
+        let mut g_in = Vec::with_capacity(64);
+        g_in.extend_from_slice(&m);
+        g_in.extend_from_slice(&dk_bad[h_off..h_off + 32]);
+        let g = sha3_512(&g_in);
+        let mut k_forge = [0u8; SHARED_SECRET_BYTES];
+        k_forge.copy_from_slice(&g[..32]);
+        let c_forge = kpke_encrypt(&ek, &m, &g[32..]);
+        let mut c_arr = [0u8; CIPHERTEXT_BYTES];
+        c_arr.copy_from_slice(&c_forge);
+
+        assert_ne!(
+            decaps(&dk_bad, &c_arr),
+            k_forge,
+            "a dk whose stored hash does not match its embedded ek must implicitly reject"
+        );
     }
 
     #[test]

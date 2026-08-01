@@ -106,6 +106,7 @@ fn hash_n(pk_seed: &[u8], adrs: &Adrs, message: &[u8]) -> [u8; N] {
     input.extend_from_slice(message);
     let mut out = [0u8; N];
     shake256(&input, &mut out);
+    input[..].zeroize();
     out
 }
 

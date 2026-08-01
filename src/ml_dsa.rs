@@ -290,7 +290,7 @@ fn rej_bounded_poly(seed: &[u8]) -> Poly {
     let mut a = ZERO_POLY;
     let mut buflen = SHAKE256_RATE * 5;
     loop {
-        let buf = shake256_bytes(seed, buflen);
+        let mut buf = shake256_bytes(seed, buflen);
         let mut ctr = 0usize;
         let mut pos = 0usize;
         while ctr < N && pos < buf.len() {
@@ -307,7 +307,9 @@ fn rej_bounded_poly(seed: &[u8]) -> Poly {
                 }
             }
         }
-        if ctr == N {
+        let done = ctr == N;
+        buf[..].zeroize();
+        if done {
             return a;
         }
         buflen *= 2;
@@ -450,6 +452,7 @@ fn sk_encode(
             packed[i] = ETA - poly[i];
         }
         pack_bits(&packed, 4, &mut out);
+        packed[..].zeroize();
     }
     for poly in t0.iter() {
         let mut packed = ZERO_POLY;
@@ -457,9 +460,11 @@ fn sk_encode(
             packed[i] = (1 << (D - 1)) - poly[i];
         }
         pack_bits(&packed, 13, &mut out);
+        packed[..].zeroize();
     }
     let mut sk = [0u8; SECRET_KEY_BYTES];
     sk.copy_from_slice(&out);
+    out[..].zeroize();
     sk
 }
 
@@ -506,26 +511,29 @@ fn sk_decode(sk: &SecretKey) -> SecretComponents {
     let mut off = 128usize;
     let mut s1 = vec![ZERO_POLY; L];
     for poly in s1.iter_mut() {
-        let raw = unpack_bits(&sk[off..off + POLYETA_PACKED], 4);
+        let mut raw = unpack_bits(&sk[off..off + POLYETA_PACKED], 4);
         for i in 0..N {
             poly[i] = ETA - raw[i];
         }
+        raw[..].zeroize();
         off += POLYETA_PACKED;
     }
     let mut s2 = vec![ZERO_POLY; K];
     for poly in s2.iter_mut() {
-        let raw = unpack_bits(&sk[off..off + POLYETA_PACKED], 4);
+        let mut raw = unpack_bits(&sk[off..off + POLYETA_PACKED], 4);
         for i in 0..N {
             poly[i] = ETA - raw[i];
         }
+        raw[..].zeroize();
         off += POLYETA_PACKED;
     }
     let mut t0 = vec![ZERO_POLY; K];
     for poly in t0.iter_mut() {
-        let raw = unpack_bits(&sk[off..off + POLYT0_PACKED], 13);
+        let mut raw = unpack_bits(&sk[off..off + POLYT0_PACKED], 13);
         for i in 0..N {
             poly[i] = (1 << (D - 1)) - raw[i];
         }
+        raw[..].zeroize();
         off += POLYT0_PACKED;
     }
     SecretComponents {
@@ -665,6 +673,7 @@ pub fn keygen(seed: &[u8; SEED_BYTES]) -> (PublicKey, SecretKey) {
             t1[i][n] = r1;
             t0[i][n] = r0;
         }
+        acc[..].zeroize();
     }
 
     let pk = pk_encode(rho, &t1);
@@ -734,6 +743,7 @@ fn sign_with_mu(sk: &SecretKey, mu: &[u8], rnd: &[u8; 32]) -> Signature {
             for n in 0..N {
                 w1[i][n] = high_bits(w[i][n]);
             }
+            acc[..].zeroize();
         }
 
         let mut ch_in = Vec::with_capacity(mu.len() + K * POLYW1_PACKED);
@@ -770,6 +780,7 @@ fn sign_with_mu(sk: &SecretKey, mu: &[u8], rnd: &[u8; 32]) -> Signature {
                 let r0 = low_bits(sub_q(w[i][n], cs2[i][n]));
                 r0_norm = r0_norm.max(r0.abs());
             }
+            acc[..].zeroize();
         }
 
         if z_norm >= GAMMA1 - BETA || r0_norm >= GAMMA2 - BETA {
@@ -1375,5 +1386,18 @@ mod tests {
                 "flipping signature bit {bitpos} must not verify"
             );
         }
+    }
+
+    #[test]
+    fn secret_key_scratch_wipe_preserves_round_trip() {
+        let seed = [13u8; 32];
+        let (_, sk) = keygen(&seed);
+        let sc = sk_decode(&sk);
+        let reencoded = sk_encode(&sc.rho, &sc.key, &sc.tr, &sc.s1, &sc.s2, &sc.t0);
+        assert_eq!(
+            &reencoded[..],
+            &sk[..],
+            "wiping decode and encode scratch must not corrupt secret key bytes still in use"
+        );
     }
 }
