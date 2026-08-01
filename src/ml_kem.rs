@@ -333,6 +333,7 @@ fn kpke_keygen(d: &[u8]) -> (Vec<u8>, Vec<u8>) {
         for n in 0..N {
             t[i][n] = add_q(acc[n], e[i][n]);
         }
+        acc[..].zeroize();
     }
 
     let mut ek = Vec::with_capacity(ENCAPS_KEY_BYTES);
@@ -389,6 +390,7 @@ fn kpke_encrypt(ek: &[u8], m: &[u8], r: &[u8]) -> Vec<u8> {
         for n in 0..N {
             u[i][n] = add_q(acc[n], e1[i][n]);
         }
+        acc[..].zeroize();
     }
 
     let mut acc = ZERO_POLY;
@@ -401,6 +403,7 @@ fn kpke_encrypt(ek: &[u8], m: &[u8], r: &[u8]) -> Vec<u8> {
     for n in 0..N {
         v[n] = add_q(add_q(acc[n], e2[n]), decompress(mu[n], 1));
     }
+    acc[..].zeroize();
 
     let mut c = Vec::with_capacity(CIPHERTEXT_BYTES);
     for poly in u.iter() {
@@ -797,6 +800,22 @@ mod tests {
         let second = keygen(&d, &z);
         assert_eq!(&first.0[..], &second.0[..]);
         assert_eq!(&first.1[..], &second.1[..]);
+    }
+
+    #[test]
+    fn accumulator_scratch_wipe_preserves_keygen_and_encaps() {
+        let kg = &records("keygen_768.txt")[0];
+        let (ek, dk) = keygen(&seed32(&hex(&kg[0])), &seed32(&hex(&kg[1])));
+        assert_eq!(&ek[..], &hex(&kg[2])[..], "wiping keygen scratch must not alter ek");
+        assert_eq!(&dk[..], &hex(&kg[3])[..], "wiping keygen scratch must not alter dk");
+
+        let en = &records("encaps_768.txt")[0];
+        let (k, c) = encaps(&as_array::<ENCAPS_KEY_BYTES>(&hex(&en[0])), &seed32(&hex(&en[1])))
+            .expect("official vectors carry a canonical key");
+        assert_eq!(&c[..], &hex(&en[2])[..], "wiping encrypt scratch must not alter ciphertext");
+        assert_eq!(&k[..], &hex(&en[3])[..], "wiping encrypt scratch must not alter shared secret");
+
+        assert_eq!(decaps(&dk, &c), decaps(&dk, &c), "decapsulation stays deterministic");
     }
 
     #[cfg(feature = "os-rng")]
