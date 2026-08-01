@@ -174,22 +174,20 @@ fn shake256_bytes(input: &[u8], outlen: usize) -> Vec<u8> {
 
 fn power2round(r: i32) -> (i32, i32) {
     let mut r0 = r & ((1 << D) - 1);
-    if r0 > (1 << (D - 1)) {
-        r0 -= 1 << D;
-    }
+    let mask = ((1 << (D - 1)) - r0) >> 31;
+    r0 -= mask & (1 << D);
     let r1 = (r - r0) >> D;
     (r1, r0)
 }
 
 fn decompose(r: i32) -> (i32, i32) {
     let mut r0 = r % (2 * GAMMA2);
-    if r0 > GAMMA2 {
-        r0 -= 2 * GAMMA2;
-    }
-    if r - r0 == Q - 1 {
-        return (0, r0 - 1);
-    }
-    let r1 = (r - r0) / (2 * GAMMA2);
+    let low_mask = (GAMMA2 - r0) >> 31;
+    r0 -= low_mask & (2 * GAMMA2);
+    let diff = (r - r0) - (Q - 1);
+    let is_boundary = !((diff | diff.wrapping_neg()) >> 31);
+    let r1 = ((r - r0) / (2 * GAMMA2)) & !is_boundary;
+    r0 -= is_boundary & 1;
     (r1, r0)
 }
 
@@ -202,11 +200,8 @@ fn low_bits(r: i32) -> i32 {
 }
 
 fn make_hint(z: i32, r: i32) -> u8 {
-    if high_bits(r) != high_bits(add_q(r, z)) {
-        1
-    } else {
-        0
-    }
+    let diff = high_bits(r) ^ high_bits(add_q(r, z));
+    (((diff | diff.wrapping_neg()) >> 31) & 1) as u8
 }
 
 fn use_hint(h: u8, r: i32) -> i32 {
@@ -727,8 +722,8 @@ fn sign_with_mu(sk: &SecretKey, mu: &[u8], rnd: &[u8; 32]) -> Signature {
         for poly in y_hat.iter_mut() {
             ntt(poly);
         }
-        let mut w = vec![ZERO_POLY; K];
-        let mut w1 = vec![ZERO_POLY; K];
+        let mut w = SecretPolys::new(vec![ZERO_POLY; K]);
+        let mut w1 = SecretPolys::new(vec![ZERO_POLY; K]);
         for i in 0..K {
             let mut acc = ZERO_POLY;
             for j in 0..L {
@@ -903,6 +898,24 @@ pub fn sign(sk: &SecretKey, message: &[u8], context: &[u8], rnd: &[u8; 32]) -> O
     Some(sign_internal(sk, &m_prime, rnd))
 }
 
+#[cfg(feature = "os-rng")]
+pub fn keygen_os() -> (PublicKey, SecretKey) {
+    let mut seed = [0u8; SEED_BYTES];
+    crate::rng::fill_random(&mut seed);
+    let out = keygen(&seed);
+    seed[..].zeroize();
+    out
+}
+
+#[cfg(feature = "os-rng")]
+pub fn sign_os(sk: &SecretKey, message: &[u8], context: &[u8]) -> Option<Signature> {
+    let mut rnd = [0u8; 32];
+    crate::rng::fill_random(&mut rnd);
+    let out = sign(sk, message, context, &rnd);
+    rnd[..].zeroize();
+    out
+}
+
 pub fn verify(pk: &PublicKey, message: &[u8], signature: &Signature, context: &[u8]) -> bool {
     let m_prime = match format_message(context, message) {
         Some(m) => m,
@@ -960,6 +973,71 @@ mod tests {
                 .wrapping_mul(6364136223846793005)
                 .wrapping_add(1442695040888963407);
             ((s >> 33) as i32).rem_euclid(Q)
+        }
+    }
+
+    fn power2round_branchy(r: i32) -> (i32, i32) {
+        let mut r0 = r & ((1 << D) - 1);
+        if r0 > (1 << (D - 1)) {
+            r0 -= 1 << D;
+        }
+        let r1 = (r - r0) >> D;
+        (r1, r0)
+    }
+
+    fn decompose_branchy(r: i32) -> (i32, i32) {
+        let mut r0 = r % (2 * GAMMA2);
+        if r0 > GAMMA2 {
+            r0 -= 2 * GAMMA2;
+        }
+        if r - r0 == Q - 1 {
+            return (0, r0 - 1);
+        }
+        let r1 = (r - r0) / (2 * GAMMA2);
+        (r1, r0)
+    }
+
+    fn high_bits_branchy(r: i32) -> i32 {
+        decompose_branchy(r).0
+    }
+
+    fn make_hint_branchy(z: i32, r: i32) -> u8 {
+        if high_bits_branchy(r) != high_bits_branchy(add_q(r, z)) {
+            1
+        } else {
+            0
+        }
+    }
+
+    #[test]
+    fn constant_time_rounding_matches_reference_exhaustively() {
+        for r in 0..Q {
+            assert_eq!(power2round(r), power2round_branchy(r), "power2round r={r}");
+            assert_eq!(decompose(r), decompose_branchy(r), "decompose r={r}");
+            assert_eq!(high_bits(r), high_bits_branchy(r), "high_bits r={r}");
+            assert_eq!(low_bits(r), decompose_branchy(r).1, "low_bits r={r}");
+        }
+    }
+
+    #[test]
+    fn constant_time_make_hint_matches_reference() {
+        let mut next = lcg(0xD1B5_4A32_D192_ED03);
+        for _ in 0..2_000_000 {
+            let r = next();
+            let z = next();
+            assert_eq!(make_hint(z, r), make_hint_branchy(z, r), "make_hint z={z} r={r}");
+        }
+        let mut r = 0;
+        while r < Q {
+            for z in [-2i32, -1, 0, 1, 2, GAMMA2, -GAMMA2, Q - 1] {
+                let zz = to_pos(z);
+                assert_eq!(
+                    make_hint(zz, r),
+                    make_hint_branchy(zz, r),
+                    "make_hint boundary z={zz} r={r}"
+                );
+            }
+            r += GAMMA2 / 2;
         }
     }
 
@@ -1108,6 +1186,19 @@ mod tests {
         let first = sign_internal(&sk, message, &rnd);
         let second = sign_internal(&sk, message, &rnd);
         assert_eq!(&first[..], &second[..]);
+    }
+
+    #[cfg(feature = "os-rng")]
+    #[test]
+    fn os_helpers_are_distinct_and_round_trip() {
+        let (pk1, sk1) = keygen_os();
+        let (pk2, _sk2) = keygen_os();
+        assert_ne!(&pk1[..], &pk2[..], "OS keygen must not repeat public keys");
+
+        let message = b"quantova os csprng";
+        let sig = sign_os(&sk1, message, b"").expect("sign");
+        assert!(verify(&pk1, message, &sig, b""), "OS keygen and sign must verify");
+        assert!(!verify(&pk2, message, &sig, b""), "a different key must reject");
     }
 
     #[test]

@@ -11,7 +11,12 @@ repository = "https://github.com/Quantova/Q-Crypto"
 rust-version = "1.75"
 
 [features]
-default = []
+default = ["os-rng"]
+# Safe-default helpers that draw randomness from the operating-system CSPRNG
+# (keygen_os, sign_os, encaps_os). Zero dependency: entropy is read from
+# /dev/urandom, so a std target is required. Turn it off to keep only the
+# explicit caller-supplied randomness entry points.
+os-rng = []
 # FN-DSA is feature-flagged and OFF by default until final publication (POLICY-crypto.md section 2).
 fn-dsa = []
 

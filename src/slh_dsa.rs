@@ -547,6 +547,34 @@ pub fn sign(
     Some(sign_internal(sk, &framed, addrnd))
 }
 
+#[cfg(feature = "os-rng")]
+pub fn keygen_os() -> ([u8; SECRET_KEY_BYTES], [u8; PUBLIC_KEY_BYTES]) {
+    let mut sk_seed = [0u8; N];
+    let mut sk_prf = [0u8; N];
+    let mut pk_seed = [0u8; N];
+    crate::rng::fill_random(&mut sk_seed);
+    crate::rng::fill_random(&mut sk_prf);
+    crate::rng::fill_random(&mut pk_seed);
+    let out = keygen(&sk_seed, &sk_prf, &pk_seed);
+    sk_seed[..].zeroize();
+    sk_prf[..].zeroize();
+    pk_seed[..].zeroize();
+    out
+}
+
+#[cfg(feature = "os-rng")]
+pub fn sign_os(
+    sk: &[u8; SECRET_KEY_BYTES],
+    message: &[u8],
+    context: &[u8],
+) -> Option<[u8; SIGNATURE_BYTES]> {
+    let mut addrnd = [0u8; N];
+    crate::rng::fill_random(&mut addrnd);
+    let out = sign(sk, message, context, &addrnd);
+    addrnd[..].zeroize();
+    out
+}
+
 pub fn verify(pk: &[u8; PUBLIC_KEY_BYTES], message: &[u8], sig: &[u8], context: &[u8]) -> bool {
     match with_context(context, message) {
         Some(framed) => verify_internal(pk, &framed, sig),
@@ -692,6 +720,19 @@ mod tests {
         let first = sign_internal(&sk, message, &addrnd);
         let second = sign_internal(&sk, message, &addrnd);
         assert_eq!(&first[..], &second[..]);
+    }
+
+    #[cfg(feature = "os-rng")]
+    #[test]
+    fn os_helpers_are_distinct_and_round_trip() {
+        let (sk1, pk1) = keygen_os();
+        let (_sk2, pk2) = keygen_os();
+        assert_ne!(&pk1[..], &pk2[..], "OS keygen must not repeat public keys");
+
+        let message = b"quantova os csprng";
+        let sig = sign_os(&sk1, message, b"").expect("sign");
+        assert!(verify(&pk1, message, &sig, b""), "OS keygen and sign must verify");
+        assert!(!verify(&pk2, message, &sig, b""), "a different key must reject");
     }
 
     #[test]

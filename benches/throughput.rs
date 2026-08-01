@@ -86,7 +86,7 @@ fn main() {
         }
         report("ml_kem_encaps", iters, start.elapsed());
     }
-    let (_kem_ss, kem_ct) = ml_kem::encaps(&kem_ek, &kem_m);
+    let (_kem_ss, kem_ct) = ml_kem::encaps(&kem_ek, &kem_m).expect("encaps");
     {
         let iters = 10_000u32;
         let start = Instant::now();

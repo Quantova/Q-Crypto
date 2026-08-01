@@ -494,7 +494,13 @@ pub fn keygen(d: &[u8; SEED_BYTES], z: &[u8; SEED_BYTES]) -> (EncapsKey, DecapsK
     (ek, dk_arr)
 }
 
-pub fn encaps(ek: &EncapsKey, m: &[u8; SEED_BYTES]) -> (SharedSecret, Ciphertext) {
+pub fn encaps(ek: &EncapsKey, m: &[u8; SEED_BYTES]) -> Option<(SharedSecret, Ciphertext)> {
+    for i in 0..K {
+        if !poly12_canonical(&ek[i * POLY_BYTES..(i + 1) * POLY_BYTES]) {
+            return None;
+        }
+    }
+
     let mut g_in = Vec::with_capacity(64);
     g_in.extend_from_slice(m);
     g_in.extend_from_slice(&sha3_256(ek));
@@ -507,7 +513,7 @@ pub fn encaps(ek: &EncapsKey, m: &[u8; SEED_BYTES]) -> (SharedSecret, Ciphertext
     let c = kpke_encrypt(ek, m, &g[32..]);
     let mut ct = [0u8; CIPHERTEXT_BYTES];
     ct.copy_from_slice(&c);
-    (shared, ct)
+    Some((shared, ct))
 }
 
 pub fn decaps(dk: &DecapsKey, c: &Ciphertext) -> SharedSecret {
@@ -551,6 +557,27 @@ pub fn decaps(dk: &DecapsKey, c: &Ciphertext) -> SharedSecret {
     k_prime[..].zeroize();
     k_bar[..].zeroize();
     shared
+}
+
+#[cfg(feature = "os-rng")]
+pub fn keygen_os() -> (EncapsKey, DecapsKey) {
+    let mut d = [0u8; SEED_BYTES];
+    let mut z = [0u8; SEED_BYTES];
+    crate::rng::fill_random(&mut d);
+    crate::rng::fill_random(&mut z);
+    let out = keygen(&d, &z);
+    d[..].zeroize();
+    z[..].zeroize();
+    out
+}
+
+#[cfg(feature = "os-rng")]
+pub fn encaps_os(ek: &EncapsKey) -> Option<(SharedSecret, Ciphertext)> {
+    let mut m = [0u8; SEED_BYTES];
+    crate::rng::fill_random(&mut m);
+    let out = encaps(ek, &m);
+    m[..].zeroize();
+    out
 }
 
 #[cfg(test)]
@@ -615,7 +642,7 @@ mod tests {
             let m = seed32(&hex(&r[1]));
             let want_c = hex(&r[2]);
             let want_k = hex(&r[3]);
-            let (k, c) = encaps(&ek, &m);
+            let (k, c) = encaps(&ek, &m).expect("official vectors carry a canonical key");
             assert_eq!(&c[..], &want_c[..], "ciphertext mismatch");
             assert_eq!(&k[..], &want_k[..], "shared secret mismatch");
         }
@@ -640,7 +667,7 @@ mod tests {
         let z = [5u8; 32];
         let (ek, dk) = keygen(&d, &z);
         let m = [9u8; 32];
-        let (k, c) = encaps(&ek, &m);
+        let (k, c) = encaps(&ek, &m).expect("freshly generated key is canonical");
         assert_eq!(decaps(&dk, &c), k);
 
         let mut bad = c;
@@ -659,7 +686,7 @@ mod tests {
         assert_eq!(&decaps(&kat_dk, &kat_c)[..], &want_k[..]);
 
         let (ek, dk) = keygen(&[7u8; 32], &[9u8; 32]);
-        let (k, c) = encaps(&ek, &[11u8; 32]);
+        let (k, c) = encaps(&ek, &[11u8; 32]).expect("freshly generated key is canonical");
         assert_eq!(decaps(&dk, &c), k);
 
         let mut s0 = unpack_bits(&dk[..POLY_BYTES], 12);
@@ -677,6 +704,23 @@ mod tests {
     }
 
     #[test]
+    fn encaps_rejects_non_canonical_key() {
+        let (ek, _dk) = keygen(&[7u8; 32], &[9u8; 32]);
+        assert!(encaps(&ek, &[11u8; 32]).is_some());
+        let mut t0 = unpack_bits(&ek[..POLY_BYTES], 12);
+        let idx = t0
+            .iter()
+            .position(|&x| x + Q <= 4095)
+            .expect("a coefficient small enough to lift exists");
+        t0[idx] += Q;
+        let mut repacked = Vec::with_capacity(POLY_BYTES);
+        pack_bits(&t0, 12, &mut repacked);
+        let mut bad = ek;
+        bad[..POLY_BYTES].copy_from_slice(&repacked);
+        assert!(encaps(&bad, &[11u8; 32]).is_none());
+    }
+
+    #[test]
     fn keygen_is_deterministic_for_fixed_seeds() {
         let d = [3u8; 32];
         let z = [5u8; 32];
@@ -684,5 +728,19 @@ mod tests {
         let second = keygen(&d, &z);
         assert_eq!(&first.0[..], &second.0[..]);
         assert_eq!(&first.1[..], &second.1[..]);
+    }
+
+    #[cfg(feature = "os-rng")]
+    #[test]
+    fn os_helpers_are_distinct_and_round_trip() {
+        let (ek1, dk1) = keygen_os();
+        let (ek2, _dk2) = keygen_os();
+        assert_ne!(&ek1[..], &ek2[..], "OS keygen must not repeat encapsulation keys");
+
+        let (k, c) = encaps_os(&ek1).expect("canonical key encapsulates");
+        assert_eq!(decaps(&dk1, &c), k, "OS encapsulation must decapsulate to the same secret");
+
+        let (k2, _c2) = encaps_os(&ek1).expect("second encapsulation");
+        assert_ne!(k, k2, "fresh OS randomness must give a fresh shared secret");
     }
 }
