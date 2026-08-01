@@ -721,6 +721,43 @@ mod tests {
     }
 
     #[test]
+    fn decaps_implicitly_rejects_every_wellformed_ciphertext_mutation() {
+        let (ek, dk) = keygen(&[0x21u8; 32], &[0x22u8; 32]);
+        let (k, c) = encaps(&ek, &[0x23u8; 32]).expect("a fresh key is canonical");
+        assert_eq!(decaps(&dk, &c), k, "the honest ciphertext recovers the secret");
+
+        let step = (CIPHERTEXT_BYTES / 96).max(1);
+        let mut p = 0usize;
+        while p < CIPHERTEXT_BYTES {
+            let mut bad = c;
+            bad[p] ^= 0x01;
+            let rejected = decaps(&dk, &bad);
+            assert_ne!(rejected, k, "mutating ciphertext byte {p} must not recover the secret");
+            assert_eq!(
+                decaps(&dk, &bad),
+                rejected,
+                "implicit rejection must be deterministic (byte {p})"
+            );
+            p += step;
+        }
+    }
+
+    #[test]
+    fn implicit_rejection_binds_the_ciphertext_and_the_z_seed() {
+        let (ek, dk) = keygen(&[0x31u8; 32], &[0x32u8; 32]);
+        let (_k, c) = encaps(&ek, &[0x33u8; 32]).expect("a fresh key is canonical");
+
+        let mut c0 = c;
+        c0[0] ^= 0x01;
+        let mut c1 = c;
+        c1[1] ^= 0x01;
+        assert_ne!(decaps(&dk, &c0), decaps(&dk, &c1), "rejection secret binds the ciphertext");
+
+        let (_ek2, dk2) = keygen(&[0x31u8; 32], &[0x99u8; 32]);
+        assert_ne!(decaps(&dk, &c0), decaps(&dk2, &c0), "rejection secret binds the z seed");
+    }
+
+    #[test]
     fn keygen_is_deterministic_for_fixed_seeds() {
         let d = [3u8; 32];
         let z = [5u8; 32];
