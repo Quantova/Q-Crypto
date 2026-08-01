@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
 
+use crate::zeroize::Zeroize;
+
 const RC: [u64; 24] = [
     1,
     32898,
@@ -113,6 +115,8 @@ fn sponge(rate: usize, domain: u8, input: &[u8], output: &mut [u8]) {
         produced += 1;
         pos += 1;
     }
+
+    state[..].zeroize();
 }
 
 pub fn sha3_256(input: &[u8]) -> [u8; 32] {

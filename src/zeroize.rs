@@ -25,6 +25,15 @@ impl Zeroize for [i32] {
     }
 }
 
+impl Zeroize for [u64] {
+    fn zeroize(&mut self) {
+        for slot in self.iter_mut() {
+            unsafe { core::ptr::write_volatile(slot, 0) }
+        }
+        compiler_fence(Ordering::SeqCst);
+    }
+}
+
 impl<const M: usize> Zeroize for [[i32; M]] {
     fn zeroize(&mut self) {
         for row in self.iter_mut() {
@@ -107,6 +116,13 @@ mod tests {
         let mut buffer = [123i32; 32];
         buffer[..].zeroize();
         assert!(buffer.iter().all(|&w| w == 0));
+    }
+
+    #[test]
+    fn zeroize_clears_every_lane() {
+        let mut state = [0x0123_4567_89ab_cdefu64; 25];
+        state[..].zeroize();
+        assert!(state.iter().all(|&w| w == 0));
     }
 
     #[test]
