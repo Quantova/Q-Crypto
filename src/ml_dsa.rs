@@ -52,8 +52,19 @@ fn sub_q(a: i32, b: i32) -> i32 {
     r + ((r >> 31) & Q)
 }
 
+const BARRETT_M: i128 = 16793614;
+const BARRETT_SHIFT: u32 = 47;
+
 fn mul_q(a: i32, b: i32) -> i32 {
-    ((a as i64 * b as i64).rem_euclid(Q as i64)) as i32
+    let p = a as i64 * b as i64;
+    let q = Q as i64;
+    let est = ((p as i128 * BARRETT_M) >> BARRETT_SHIFT) as i64;
+    let mut r = p - est * q;
+    r -= q;
+    r += (r >> 63) & q;
+    r -= q;
+    r += (r >> 63) & q;
+    r as i32
 }
 
 fn to_pos(a: i32) -> i32 {
@@ -959,6 +970,25 @@ mod tests {
 
     fn seed32(v: &[u8]) -> [u8; 32] {
         as_array::<32>(v)
+    }
+
+    #[test]
+    fn mul_q_matches_rem_euclid_over_edges_and_a_random_sweep() {
+        let reference = |a: i32, b: i32| ((a as i64 * b as i64).rem_euclid(Q as i64)) as i32;
+        let edges = [0, 1, 2, Q - 1, Q - 2, Q / 2, Q / 2 + 1];
+        for &a in &edges {
+            for b in 0..Q {
+                assert_eq!(mul_q(a, b), reference(a, b), "edge a={a} b={b}");
+            }
+        }
+        let mut s: u64 = 0x9e37_79b9_7f4a_7c15;
+        for _ in 0..4_000_000 {
+            s = s.wrapping_mul(6364136223846793005).wrapping_add(1);
+            let a = ((s >> 33) as u32 % Q as u32) as i32;
+            s = s.wrapping_mul(6364136223846793005).wrapping_add(1);
+            let b = ((s >> 33) as u32 % Q as u32) as i32;
+            assert_eq!(mul_q(a, b), reference(a, b), "rand a={a} b={b}");
+        }
     }
 
     fn load(name: &str) -> String {

@@ -41,8 +41,19 @@ fn sub_q(a: i32, b: i32) -> i32 {
     r + ((r >> 31) & Q)
 }
 
+const BARRETT_M: i64 = 20158;
+const BARRETT_SHIFT: u32 = 26;
+
 fn mul_q(a: i32, b: i32) -> i32 {
-    (a * b) % Q
+    let p = a as i64 * b as i64;
+    let q = Q as i64;
+    let est = (p * BARRETT_M) >> BARRETT_SHIFT;
+    let mut r = p - est * q;
+    r -= q;
+    r += (r >> 63) & q;
+    r -= q;
+    r += (r >> 63) & q;
+    r as i32
 }
 
 
@@ -623,6 +634,16 @@ mod tests {
             .filter(|l| !l.is_empty() && !l.starts_with('#'))
             .map(|l| l.split_whitespace().map(|s| s.to_string()).collect())
             .collect()
+    }
+
+    #[test]
+    fn mul_q_matches_the_schoolbook_reduction_over_every_residue_pair() {
+        for a in 0..Q {
+            for b in 0..Q {
+                let want = (a as i64 * b as i64 % Q as i64) as i32;
+                assert_eq!(mul_q(a, b), want, "mul_q({a},{b})");
+            }
+        }
     }
 
     #[test]
