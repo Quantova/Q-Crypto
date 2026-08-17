@@ -1,0 +1,24 @@
+# Quantova secret scan allowlist for Q-Crypto.
+# The values a naive scanner flags here are published NIST test vectors and Rust
+# type constants, not secrets. Real keys are generated at runtime into a local
+# keystore that is never committed.
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Q-Crypto known safe test vectors, lockfile hashes, and type constants"
+
+paths = [
+  '''vectors/.*''',
+  '''Cargo\.lock$''',
+]
+
+stopwords = [
+  "SECRET_KEY_BYTES",
+  "SHARED_SECRET_BYTES",
+  "SecretKey",
+  "SecretPolys",
+  "sk_prf",
+  "sk_seed",
+]
