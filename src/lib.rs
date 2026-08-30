@@ -2,6 +2,10 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
 #![forbid(unsafe_op_in_unsafe_fn)]
+#![allow(clippy::needless_range_loop)]
+#![allow(clippy::manual_div_ceil)]
+#![allow(clippy::manual_memcpy)]
+#![allow(clippy::assign_op_pattern)]
 
 pub mod chacha20poly1305;
 pub mod ml_dsa;
