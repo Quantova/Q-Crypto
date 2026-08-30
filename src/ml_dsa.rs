@@ -1,7 +1,6 @@
 // Copyright 2026 Quantova Inc
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-
 use crate::sha3::{shake128, shake256};
 use crate::zeroize::{SecretPolys, Zeroize, Zeroizing};
 
@@ -40,7 +39,6 @@ const ZERO_POLY: Poly = [0i32; N];
 
 const SHAKE128_RATE: usize = 168;
 const SHAKE256_RATE: usize = 136;
-
 
 fn add_q(a: i32, b: i32) -> i32 {
     let r = a + b - Q;
@@ -86,7 +84,6 @@ fn inf_norm(p: &Poly) -> i32 {
     }
     max
 }
-
 
 const fn brv8(mut i: usize) -> u32 {
     let mut r = 0u32;
@@ -175,13 +172,11 @@ fn pointwise_acc(acc: &mut Poly, a: &Poly, b: &Poly) {
     }
 }
 
-
 fn shake256_bytes(input: &[u8], outlen: usize) -> Vec<u8> {
     let mut out = vec![0u8; outlen];
     shake256(input, &mut out);
     out
 }
-
 
 fn power2round(r: i32) -> (i32, i32) {
     let mut r0 = r & ((1 << D) - 1);
@@ -227,7 +222,6 @@ fn use_hint(h: u8, r: i32) -> i32 {
     }
 }
 
-
 fn pack_bits(coeffs: &Poly, bits: usize, out: &mut Vec<u8>) {
     let mask: u64 = (1u64 << bits) - 1;
     let mut acc: u64 = 0;
@@ -261,7 +255,6 @@ fn unpack_bits(data: &[u8], bits: usize) -> Poly {
     }
     coeffs
 }
-
 
 fn rej_ntt_poly(seed: &[u8]) -> Poly {
     let mut a = ZERO_POLY;
@@ -421,7 +414,6 @@ fn sample_in_ball(c_tilde: &[u8]) -> Poly {
         buflen *= 2;
     }
 }
-
 
 fn pk_encode(rho: &[u8], t1: &[Poly]) -> PublicKey {
     let mut out = Vec::with_capacity(PUBLIC_KEY_BYTES);
@@ -1006,7 +998,6 @@ mod tests {
             .collect()
     }
 
-
     fn lcg(seed: u64) -> impl FnMut() -> i32 {
         let mut s = seed;
         move || {
@@ -1066,7 +1057,11 @@ mod tests {
         for _ in 0..2_000_000 {
             let r = next();
             let z = next();
-            assert_eq!(make_hint(z, r), make_hint_branchy(z, r), "make_hint z={z} r={r}");
+            assert_eq!(
+                make_hint(z, r),
+                make_hint_branchy(z, r),
+                "make_hint z={z} r={r}"
+            );
         }
         let mut r = 0;
         while r < Q {
@@ -1238,8 +1233,14 @@ mod tests {
 
         let message = b"quantova os csprng";
         let sig = sign_os(&sk1, message, b"").expect("sign");
-        assert!(verify(&pk1, message, &sig, b""), "OS keygen and sign must verify");
-        assert!(!verify(&pk2, message, &sig, b""), "a different key must reject");
+        assert!(
+            verify(&pk1, message, &sig, b""),
+            "OS keygen and sign must verify"
+        );
+        assert!(
+            !verify(&pk2, message, &sig, b""),
+            "a different key must reject"
+        );
     }
 
     #[test]
@@ -1283,16 +1284,26 @@ mod tests {
         let context = b"qtv-reject";
         let rnd = [0u8; 32];
         let (message, sig) = signature_carrying_a_hint(&sk, context, &rnd);
-        assert!(verify(&pk, &message, &sig, context), "the honest signature verifies");
+        assert!(
+            verify(&pk, &message, &sig, context),
+            "the honest signature verifies"
+        );
 
         let decoded = sig_decode(&sig).unwrap();
         let reencoded = sig_encode(&decoded.c_tilde, &decoded.z, &decoded.h);
-        assert_eq!(&reencoded[..], &sig[..], "decode then encode is the identity");
+        assert_eq!(
+            &reencoded[..],
+            &sig[..],
+            "decode then encode is the identity"
+        );
 
         {
             let mut s = sig;
             s[0] ^= 0x01;
-            assert!(!verify(&pk, &message, &s, context), "a perturbed c-tilde must reject");
+            assert!(
+                !verify(&pk, &message, &s, context),
+                "a perturbed c-tilde must reject"
+            );
         }
 
         {
@@ -1309,17 +1320,31 @@ mod tests {
             }
             assert!(cleared, "the chosen signature carries a hint bit to clear");
             let s = sig_encode(&d.c_tilde, &d.z, &d.h);
-            assert!(sig_decode(&s).is_some(), "the mutated hint is still well-formed");
-            assert!(!verify(&pk, &message, &s, context), "clearing a hint bit must reject");
+            assert!(
+                sig_decode(&s).is_some(),
+                "the mutated hint is still well-formed"
+            );
+            assert!(
+                !verify(&pk, &message, &s, context),
+                "clearing a hint bit must reject"
+            );
         }
 
         {
             let mut d = sig_decode(&sig).unwrap();
-            let n = (0..N).find(|&n| d.h[0][n] == 0).expect("row 0 has an unset position");
+            let n = (0..N)
+                .find(|&n| d.h[0][n] == 0)
+                .expect("row 0 has an unset position");
             d.h[0][n] = 1;
             let s = sig_encode(&d.c_tilde, &d.z, &d.h);
-            assert!(sig_decode(&s).is_some(), "the added hint stays within OMEGA");
-            assert!(!verify(&pk, &message, &s, context), "adding a hint bit must reject");
+            assert!(
+                sig_decode(&s).is_some(),
+                "the added hint stays within OMEGA"
+            );
+            assert!(
+                !verify(&pk, &message, &s, context),
+                "adding a hint bit must reject"
+            );
         }
 
         {
@@ -1337,8 +1362,14 @@ mod tests {
             assert!(nudged, "a small z coefficient exists to nudge");
             let s = sig_encode(&d.c_tilde, &d.z, &d.h);
             let d2 = sig_decode(&s).unwrap();
-            assert!(z_inf_norm(&d2) < GAMMA1 - BETA, "the nudged z is still in bound");
-            assert!(!verify(&pk, &message, &s, context), "an in-bound z nudge must reject");
+            assert!(
+                z_inf_norm(&d2) < GAMMA1 - BETA,
+                "the nudged z is still in bound"
+            );
+            assert!(
+                !verify(&pk, &message, &s, context),
+                "an in-bound z nudge must reject"
+            );
         }
 
         {
@@ -1346,15 +1377,25 @@ mod tests {
             d.z[0][0] = GAMMA1 - BETA;
             let s = sig_encode(&d.c_tilde, &d.z, &d.h);
             let d2 = sig_decode(&s).unwrap();
-            assert_eq!(z_inf_norm(&d2), GAMMA1 - BETA, "the boundary coefficient survives encoding");
-            assert!(!verify(&pk, &message, &s, context), "a z at the bound must reject");
+            assert_eq!(
+                z_inf_norm(&d2),
+                GAMMA1 - BETA,
+                "the boundary coefficient survives encoding"
+            );
+            assert!(
+                !verify(&pk, &message, &s, context),
+                "a z at the bound must reject"
+            );
         }
 
         {
             let mut d = sig_decode(&sig).unwrap();
             d.z[0][0] = GAMMA1 - 1;
             let s = sig_encode(&d.c_tilde, &d.z, &d.h);
-            assert!(!verify(&pk, &message, &s, context), "an over-bound z must reject");
+            assert!(
+                !verify(&pk, &message, &s, context),
+                "an over-bound z must reject"
+            );
         }
     }
 
@@ -1369,8 +1410,14 @@ mod tests {
         {
             let mut s = sig;
             s[hint_off + OMEGA] = (OMEGA + 1) as u8;
-            assert!(sig_decode(&s).is_none(), "an over-OMEGA hint count does not decode");
-            assert!(!verify(&pk, &message, &s, context), "and verification refuses it");
+            assert!(
+                sig_decode(&s).is_none(),
+                "an over-OMEGA hint count does not decode"
+            );
+            assert!(
+                !verify(&pk, &message, &s, context),
+                "and verification refuses it"
+            );
         }
 
         {
@@ -1385,15 +1432,27 @@ mod tests {
             let b = s[hint_off + 1];
             s[hint_off] = a.max(b);
             s[hint_off + 1] = a.min(b);
-            assert!(sig_decode(&s).is_none(), "decreasing positions do not decode");
-            assert!(!verify(&pk, &message, &s, context), "and verification refuses it");
+            assert!(
+                sig_decode(&s).is_none(),
+                "decreasing positions do not decode"
+            );
+            assert!(
+                !verify(&pk, &message, &s, context),
+                "and verification refuses it"
+            );
         }
 
         {
             let mut s = sig;
             s[hint_off + OMEGA - 1] = 0xff;
-            assert!(sig_decode(&s).is_none(), "trailing nonzero hint bytes do not decode");
-            assert!(!verify(&pk, &message, &s, context), "and verification refuses it");
+            assert!(
+                sig_decode(&s).is_none(),
+                "trailing nonzero hint bytes do not decode"
+            );
+            assert!(
+                !verify(&pk, &message, &s, context),
+                "and verification refuses it"
+            );
         }
     }
 
@@ -1404,7 +1463,10 @@ mod tests {
         let message = b"quantova ml-dsa differential armor";
         let rnd = [0u8; 32];
         let sig = sign(&sk, message, context, &rnd).unwrap();
-        assert!(verify(&pk, message, &sig, context), "the honest signature verifies");
+        assert!(
+            verify(&pk, message, &sig, context),
+            "the honest signature verifies"
+        );
 
         let mut next = lcg(0xF00D_BEEF_1234_5678);
         for _ in 0..256 {

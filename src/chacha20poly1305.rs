@@ -467,14 +467,7 @@ mod tests {
         let key = counting_key();
         let nonce: [u8; NONCE_BYTES] = hex("000000090000004a00000000").try_into().unwrap();
         let counters = [
-            0u32,
-            1,
-            8,
-            100,
-            4294967288,
-            4294967291,
-            4294967294,
-            4294967295,
+            0u32, 1, 8, 100, 4294967288, 4294967291, 4294967294, 4294967295,
         ];
         for &counter in &counters {
             for len in 0..=2100usize {

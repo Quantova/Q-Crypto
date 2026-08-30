@@ -46,7 +46,9 @@ fn main() {
 
     println!(
         "available_parallelism = {}",
-        thread::available_parallelism().map(|x| x.get()).unwrap_or(0)
+        thread::available_parallelism()
+            .map(|x| x.get())
+            .unwrap_or(0)
     );
     let mut base = Duration::from_secs(1);
     for cores in [1usize, 2, 3, 4, 8, 16, 24] {
@@ -61,7 +63,10 @@ fn main() {
             base = per;
         }
         let speedup = base.as_secs_f64() / per.as_secs_f64();
-        println!("cores={cores:2} per_batch_ms={:7.2} speedup={speedup:.1}x", per.as_secs_f64() * 1000.0);
+        println!(
+            "cores={cores:2} per_batch_ms={:7.2} speedup={speedup:.1}x",
+            per.as_secs_f64() * 1000.0
+        );
     }
 
     if std::env::args().any(|a| a == "sustain") {

@@ -1,7 +1,6 @@
 // Copyright 2026 Quantova Inc
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-
 use crate::sha3::shake256;
 use crate::zeroize::Zeroize;
 
@@ -732,8 +731,14 @@ mod tests {
 
         let message = b"quantova os csprng";
         let sig = sign_os(&sk1, message, b"").expect("sign");
-        assert!(verify(&pk1, message, &sig, b""), "OS keygen and sign must verify");
-        assert!(!verify(&pk2, message, &sig, b""), "a different key must reject");
+        assert!(
+            verify(&pk1, message, &sig, b""),
+            "OS keygen and sign must verify"
+        );
+        assert!(
+            !verify(&pk2, message, &sig, b""),
+            "a different key must reject"
+        );
     }
 
     #[test]

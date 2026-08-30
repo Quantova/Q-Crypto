@@ -1,7 +1,6 @@
 // Copyright 2026 Quantova Inc
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-
 use crate::sha3::{sha3_256, sha3_512, shake128, shake256};
 use crate::zeroize::{Zeroize, Zeroizing};
 
@@ -30,7 +29,6 @@ type Poly = [i32; N];
 
 const ZERO_POLY: Poly = [0i32; N];
 
-
 fn add_q(a: i32, b: i32) -> i32 {
     let r = a + b - Q;
     r + ((r >> 31) & Q)
@@ -55,7 +53,6 @@ fn mul_q(a: i32, b: i32) -> i32 {
     r += (r >> 63) & q;
     r as i32
 }
-
 
 const fn brv7(mut i: usize) -> u32 {
     let mut r = 0u32;
@@ -171,7 +168,6 @@ fn pointwise_acc(acc: &mut Poly, a: &Poly, b: &Poly) {
     }
 }
 
-
 fn compress(x: i32, d: usize) -> i32 {
     let t = ((x as u32) << d) + (Q as u32) / 2;
     ((t / Q as u32) & ((1u32 << d) - 1)) as i32
@@ -181,7 +177,6 @@ fn decompress(y: i32, d: usize) -> i32 {
     let t = (y as u32 * Q as u32 + (1u32 << (d - 1))) >> d;
     t as i32
 }
-
 
 fn pack_bits(coeffs: &Poly, bits: usize, out: &mut Vec<u8>) {
     let mask: u64 = (1u64 << bits) - 1;
@@ -228,7 +223,6 @@ fn byte_decode_12(data: &[u8]) -> Poly {
 fn poly12_canonical(data: &[u8]) -> bool {
     unpack_bits(data, 12).iter().all(|&c| c < Q)
 }
-
 
 const SHAKE128_RATE: usize = 168;
 
@@ -752,7 +746,11 @@ mod tests {
     fn decaps_implicitly_rejects_every_wellformed_ciphertext_mutation() {
         let (ek, dk) = keygen(&[0x21u8; 32], &[0x22u8; 32]);
         let (k, c) = encaps(&ek, &[0x23u8; 32]).expect("a fresh key is canonical");
-        assert_eq!(decaps(&dk, &c), k, "the honest ciphertext recovers the secret");
+        assert_eq!(
+            decaps(&dk, &c),
+            k,
+            "the honest ciphertext recovers the secret"
+        );
 
         let step = (CIPHERTEXT_BYTES / 96).max(1);
         let mut p = 0usize;
@@ -760,7 +758,10 @@ mod tests {
             let mut bad = c;
             bad[p] ^= 0x01;
             let rejected = decaps(&dk, &bad);
-            assert_ne!(rejected, k, "mutating ciphertext byte {p} must not recover the secret");
+            assert_ne!(
+                rejected, k,
+                "mutating ciphertext byte {p} must not recover the secret"
+            );
             assert_eq!(
                 decaps(&dk, &bad),
                 rejected,
@@ -779,17 +780,29 @@ mod tests {
         c0[0] ^= 0x01;
         let mut c1 = c;
         c1[1] ^= 0x01;
-        assert_ne!(decaps(&dk, &c0), decaps(&dk, &c1), "rejection secret binds the ciphertext");
+        assert_ne!(
+            decaps(&dk, &c0),
+            decaps(&dk, &c1),
+            "rejection secret binds the ciphertext"
+        );
 
         let (_ek2, dk2) = keygen(&[0x31u8; 32], &[0x99u8; 32]);
-        assert_ne!(decaps(&dk, &c0), decaps(&dk2, &c0), "rejection secret binds the z seed");
+        assert_ne!(
+            decaps(&dk, &c0),
+            decaps(&dk2, &c0),
+            "rejection secret binds the z seed"
+        );
     }
 
     #[test]
     fn decaps_rejects_a_dk_whose_stored_hash_does_not_match_ek() {
         let (ek, dk) = keygen(&[0x51u8; 32], &[0x52u8; 32]);
         let (k, c) = encaps(&ek, &[0x53u8; 32]).expect("a fresh key is canonical");
-        assert_eq!(decaps(&dk, &c), k, "the honest ciphertext recovers the secret");
+        assert_eq!(
+            decaps(&dk, &c),
+            k,
+            "the honest ciphertext recovers the secret"
+        );
 
         let h_off = 2 * K * POLY_BYTES + 32;
         let mut dk_bad = dk;
@@ -827,16 +840,39 @@ mod tests {
     fn accumulator_scratch_wipe_preserves_keygen_and_encaps() {
         let kg = &records("keygen_768.txt")[0];
         let (ek, dk) = keygen(&seed32(&hex(&kg[0])), &seed32(&hex(&kg[1])));
-        assert_eq!(&ek[..], &hex(&kg[2])[..], "wiping keygen scratch must not alter ek");
-        assert_eq!(&dk[..], &hex(&kg[3])[..], "wiping keygen scratch must not alter dk");
+        assert_eq!(
+            &ek[..],
+            &hex(&kg[2])[..],
+            "wiping keygen scratch must not alter ek"
+        );
+        assert_eq!(
+            &dk[..],
+            &hex(&kg[3])[..],
+            "wiping keygen scratch must not alter dk"
+        );
 
         let en = &records("encaps_768.txt")[0];
-        let (k, c) = encaps(&as_array::<ENCAPS_KEY_BYTES>(&hex(&en[0])), &seed32(&hex(&en[1])))
-            .expect("official vectors carry a canonical key");
-        assert_eq!(&c[..], &hex(&en[2])[..], "wiping encrypt scratch must not alter ciphertext");
-        assert_eq!(&k[..], &hex(&en[3])[..], "wiping encrypt scratch must not alter shared secret");
+        let (k, c) = encaps(
+            &as_array::<ENCAPS_KEY_BYTES>(&hex(&en[0])),
+            &seed32(&hex(&en[1])),
+        )
+        .expect("official vectors carry a canonical key");
+        assert_eq!(
+            &c[..],
+            &hex(&en[2])[..],
+            "wiping encrypt scratch must not alter ciphertext"
+        );
+        assert_eq!(
+            &k[..],
+            &hex(&en[3])[..],
+            "wiping encrypt scratch must not alter shared secret"
+        );
 
-        assert_eq!(decaps(&dk, &c), decaps(&dk, &c), "decapsulation stays deterministic");
+        assert_eq!(
+            decaps(&dk, &c),
+            decaps(&dk, &c),
+            "decapsulation stays deterministic"
+        );
     }
 
     #[cfg(feature = "os-rng")]
@@ -844,10 +880,18 @@ mod tests {
     fn os_helpers_are_distinct_and_round_trip() {
         let (ek1, dk1) = keygen_os();
         let (ek2, _dk2) = keygen_os();
-        assert_ne!(&ek1[..], &ek2[..], "OS keygen must not repeat encapsulation keys");
+        assert_ne!(
+            &ek1[..],
+            &ek2[..],
+            "OS keygen must not repeat encapsulation keys"
+        );
 
         let (k, c) = encaps_os(&ek1).expect("canonical key encapsulates");
-        assert_eq!(decaps(&dk1, &c), k, "OS encapsulation must decapsulate to the same secret");
+        assert_eq!(
+            decaps(&dk1, &c),
+            k,
+            "OS encapsulation must decapsulate to the same secret"
+        );
 
         let (k2, _c2) = encaps_os(&ek1).expect("second encapsulation");
         assert_ne!(k, k2, "fresh OS randomness must give a fresh shared secret");

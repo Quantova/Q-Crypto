@@ -1,18 +1,14 @@
 // Copyright 2026 Quantova Inc
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-
 use std::fs::File;
 use std::io::Read;
 
 #[cfg(target_os = "linux")]
 fn os_fill(buf: &mut [u8]) -> bool {
     extern "C" {
-        fn getrandom(
-            buf: *mut core::ffi::c_void,
-            buflen: usize,
-            flags: core::ffi::c_uint,
-        ) -> isize;
+        fn getrandom(buf: *mut core::ffi::c_void, buflen: usize, flags: core::ffi::c_uint)
+            -> isize;
     }
     let mut filled = 0usize;
     while filled < buf.len() {
@@ -69,8 +65,9 @@ pub(crate) fn fill_random(buf: &mut [u8]) {
     if os_fill(buf) {
         return;
     }
-    let mut file = File::open("/dev/urandom")
-        .expect("Q-Crypto: no OS entropy source (CSPRNG syscall and /dev/urandom both unavailable)");
+    let mut file = File::open("/dev/urandom").expect(
+        "Q-Crypto: no OS entropy source (CSPRNG syscall and /dev/urandom both unavailable)",
+    );
     file.read_exact(buf)
         .expect("Q-Crypto: short read from /dev/urandom");
 }

@@ -54,13 +54,15 @@ fn main() {
         }
         report("ml_dsa_sign", iters, start.elapsed());
     }
-    let mldsa_sig = ml_dsa::sign(&mldsa_sk, &mldsa_msg, &mldsa_ctx, &mldsa_rnd)
-        .expect("empty context signs");
+    let mldsa_sig =
+        ml_dsa::sign(&mldsa_sk, &mldsa_msg, &mldsa_ctx, &mldsa_rnd).expect("empty context signs");
     {
         let iters = 4_000u32;
         let start = Instant::now();
         for _ in 0..iters {
-            black_box(ml_dsa::verify(&mldsa_pk, &mldsa_msg, &mldsa_sig, &mldsa_ctx));
+            black_box(ml_dsa::verify(
+                &mldsa_pk, &mldsa_msg, &mldsa_sig, &mldsa_ctx,
+            ));
         }
         report("ml_dsa_verify", iters, start.elapsed());
     }
@@ -120,8 +122,8 @@ fn main() {
         }
         report("slh_dsa_sign", iters, start.elapsed());
     }
-    let slh_sig = slh_dsa::sign(&slh_sk, &slh_msg, &slh_ctx, &slh_addrnd)
-        .expect("empty context signs");
+    let slh_sig =
+        slh_dsa::sign(&slh_sk, &slh_msg, &slh_ctx, &slh_addrnd).expect("empty context signs");
     {
         let iters = 100u32;
         let start = Instant::now();
