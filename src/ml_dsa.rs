@@ -437,14 +437,15 @@ fn pk_decode(pk: &PublicKey) -> ([u8; 32], Vec<Poly>) {
     (rho, t1)
 }
 
-fn sk_encode(
+fn sk_encode_into(
     rho: &[u8],
     key: &[u8],
     tr: &[u8],
     s1: &[Poly],
     s2: &[Poly],
     t0: &[Poly],
-) -> SecretKey {
+    sk: &mut SecretKey,
+) {
     let mut out = Vec::with_capacity(SECRET_KEY_BYTES);
     out.extend_from_slice(rho);
     out.extend_from_slice(key);
@@ -465,10 +466,8 @@ fn sk_encode(
         pack_bits(&packed, 13, &mut out);
         packed[..].zeroize();
     }
-    let mut sk = [0u8; SECRET_KEY_BYTES];
     sk.copy_from_slice(&out);
     out[..].zeroize();
-    sk
 }
 
 struct SecretComponents {
@@ -641,6 +640,25 @@ fn hint_weight(h: &[Poly]) -> usize {
 }
 
 pub fn keygen(seed: &[u8; SEED_BYTES]) -> (PublicKey, SecretKey) {
+    let mut sk = [0u8; SECRET_KEY_BYTES];
+    let pk = keygen_into(seed, &mut sk);
+    (pk, sk)
+}
+
+pub fn sign_from_seed(
+    seed: &[u8; SEED_BYTES],
+    message: &[u8],
+    context: &[u8],
+    rnd: &[u8; 32],
+) -> Option<Signature> {
+    let mut sk = [0u8; SECRET_KEY_BYTES];
+    let _pk = keygen_into(seed, &mut sk);
+    let signature = sign(&sk, message, context, rnd);
+    sk[..].zeroize();
+    signature
+}
+
+pub fn keygen_into(seed: &[u8; SEED_BYTES], sk: &mut SecretKey) -> PublicKey {
     let mut h_in = Vec::with_capacity(34);
     h_in.extend_from_slice(seed);
     h_in.push(K as u8);
@@ -681,7 +699,7 @@ pub fn keygen(seed: &[u8; SEED_BYTES]) -> (PublicKey, SecretKey) {
 
     let pk = pk_encode(rho, &t1);
     let tr = shake256_bytes(&pk, 64);
-    let sk = sk_encode(rho, key, &tr, &s1, &s2, &t0);
+    sk_encode_into(rho, key, &tr, &s1, &s2, &t0, sk);
 
     for poly in s1.iter_mut().chain(s2.iter_mut()).chain(s1_hat.iter_mut()) {
         poly[..].zeroize();
@@ -689,7 +707,7 @@ pub fn keygen(seed: &[u8; SEED_BYTES]) -> (PublicKey, SecretKey) {
     for poly in t0.iter_mut() {
         poly[..].zeroize();
     }
-    (pk, sk)
+    pk
 }
 
 fn sign_with_mu(sk: &SecretKey, mu: &[u8], rnd: &[u8; 32]) -> Signature {
@@ -1481,11 +1499,22 @@ mod tests {
     }
 
     #[test]
+    fn sign_from_seed_matches_keygen_then_sign() {
+        let seed = [7u8; 32];
+        let message = b"quantova";
+        let (_pk, sk) = keygen(&seed);
+        let direct = sign(&sk, message, &[], &[0u8; 32]).unwrap();
+        let sealed = sign_from_seed(&seed, message, &[], &[0u8; 32]).unwrap();
+        assert_eq!(&direct[..], &sealed[..]);
+    }
+
+    #[test]
     fn secret_key_scratch_wipe_preserves_round_trip() {
         let seed = [13u8; 32];
         let (_, sk) = keygen(&seed);
         let sc = sk_decode(&sk);
-        let reencoded = sk_encode(&sc.rho, &sc.key, &sc.tr, &sc.s1, &sc.s2, &sc.t0);
+        let mut reencoded = [0u8; SECRET_KEY_BYTES];
+        sk_encode_into(&sc.rho, &sc.key, &sc.tr, &sc.s1, &sc.s2, &sc.t0, &mut reencoded);
         assert_eq!(
             &reencoded[..],
             &sk[..],
