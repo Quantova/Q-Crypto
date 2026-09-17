@@ -1269,7 +1269,7 @@ mod tests {
         assert_eq!(format!("{:?}", components), "SecretComponents(redacted)");
     }
 
-    fn signature_carrying_a_hint(
+    pub(super) fn signature_carrying_a_hint(
         sk: &SecretKey,
         context: &[u8],
         rnd: &[u8; 32],
@@ -1519,6 +1519,98 @@ mod tests {
             &reencoded[..],
             &sk[..],
             "wiping decode and encode scratch must not corrupt secret key bytes still in use"
+        );
+    }
+}
+
+#[cfg(test)]
+mod hint_encoding_tests {
+    use super::tests::signature_carrying_a_hint;
+    use super::*;
+
+    // FIPS 204 Algorithm 21 makes three demands of an encoded hint. The per polynomial
+    // limits rise and stay within OMEGA, the indices inside one polynomial strictly
+    // increase, and every unused byte is zero. Drop any one of them and a signature gains
+    // a second valid encoding, which is signature malleability, and a transaction id that
+    // hashes the signature stops being unique.
+    fn honest_hint_bytes() -> Vec<u8> {
+        let (_pk, sk) = keygen(&[0x42u8; 32]);
+        let context = b"qtv-hint";
+        let rnd = [0u8; 32];
+        let (_m, sig) = signature_carrying_a_hint(&sk, context, &rnd);
+        let off = SIGNATURE_BYTES - (OMEGA + K);
+        sig[off..off + OMEGA + K].to_vec()
+    }
+
+    #[test]
+    fn an_honest_hint_unpacks() {
+        assert!(
+            hint_bit_unpack(&honest_hint_bytes()).is_some(),
+            "the honest hint must unpack or the refusals below prove nothing"
+        );
+    }
+
+    #[test]
+    fn a_limit_past_omega_is_refused() {
+        let mut y = honest_hint_bytes();
+        y[OMEGA] = (OMEGA + 1) as u8;
+        assert!(
+            hint_bit_unpack(&y).is_none(),
+            "a per polynomial limit above OMEGA must be refused, it reads indices that the \
+             signature never carried"
+        );
+    }
+
+    #[test]
+    fn a_limit_that_moves_backwards_is_refused() {
+        let mut y = honest_hint_bytes();
+        y[OMEGA] = 5;
+        y[OMEGA + 1] = 4;
+        assert!(
+            hint_bit_unpack(&y).is_none(),
+            "the per polynomial limits must not decrease, a backwards limit re reads another \
+             polynomial's indices"
+        );
+    }
+
+    #[test]
+    fn repeated_or_unordered_indices_are_refused() {
+        let mut y = vec![0u8; OMEGA + K];
+        y[0] = 7;
+        y[1] = 7;
+        y[OMEGA] = 2;
+        for i in 1..K {
+            y[OMEGA + i] = 2;
+        }
+        assert!(
+            hint_bit_unpack(&y).is_none(),
+            "a repeated index must be refused, strictly increasing is what makes the encoding \
+             canonical"
+        );
+
+        let mut y = vec![0u8; OMEGA + K];
+        y[0] = 9;
+        y[1] = 3;
+        y[OMEGA] = 2;
+        for i in 1..K {
+            y[OMEGA + i] = 2;
+        }
+        assert!(
+            hint_bit_unpack(&y).is_none(),
+            "a descending index pair must be refused"
+        );
+    }
+
+    #[test]
+    fn a_nonzero_byte_in_the_unused_tail_is_refused() {
+        let mut y = honest_hint_bytes();
+        let used = y[OMEGA + K - 1] as usize;
+        assert!(used < OMEGA, "the sample leaves an unused tail to poison");
+        y[used] = 0xff;
+        assert!(
+            hint_bit_unpack(&y).is_none(),
+            "a nonzero byte past the last used index must be refused, otherwise one signature \
+             has many encodings and becomes malleable"
         );
     }
 }
