@@ -28,3 +28,6 @@ fn-dsa = []
 name = "throughput"
 path = "benches/throughput.rs"
 harness = false
+
+[profile.release]
+overflow-checks = true
