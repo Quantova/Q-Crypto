@@ -16,7 +16,7 @@ pub mod slh_dsa;
 mod zeroize;
 
 #[cfg(feature = "os-rng")]
-mod rng;
+pub mod rng;
 
 #[cfg(feature = "os-rng")]
 pub use ml_dsa::{keygen_os as ml_dsa_keygen_os, sign_os as ml_dsa_sign_os};
