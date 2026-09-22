@@ -1,8 +1,6 @@
 // Copyright 2026 Quantova Inc
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-//! Throughput benchmark for the post quantum primitives.
-
 use std::hint::black_box;
 use std::time::{Duration, Instant};
 
@@ -21,7 +19,6 @@ fn report(name: &str, iters: u32, elapsed: Duration) {
 }
 
 fn main() {
-    // sha3_256 on a one kilobyte input.
     {
         let input = [90u8; 1024];
         let iters = 200_000u32;
@@ -32,7 +29,6 @@ fn main() {
         report("sha3_256", iters, start.elapsed());
     }
 
-    // ml_dsa keygen, sign, and verify.
     let mldsa_seed = [17u8; 32];
     {
         let iters = 2_000u32;
@@ -67,7 +63,6 @@ fn main() {
         report("ml_dsa_verify", iters, start.elapsed());
     }
 
-    // ml_kem keygen, encaps, and decaps.
     let kem_d = [68u8; 32];
     let kem_z = [85u8; 32];
     {
@@ -98,7 +93,6 @@ fn main() {
         report("ml_kem_decaps", iters, start.elapsed());
     }
 
-    // slh_dsa keygen, sign, and verify. Signing is slow, so the iteration counts stay small.
     let slh_sk_seed = [119u8; 24];
     let slh_sk_prf = [136u8; 24];
     let slh_pk_seed = [153u8; 24];
@@ -133,7 +127,6 @@ fn main() {
         report("slh_dsa_verify", iters, start.elapsed());
     }
 
-    // chacha20poly1305 seal and open on a one kilobyte payload.
     let aead_key = [221u8; 32];
     let aead_nonce = [238u8; 12];
     let aead_aad = [1u8; 16];

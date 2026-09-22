@@ -4,29 +4,29 @@
 use crate::sha3::shake256;
 use crate::zeroize::Zeroize;
 
-const N: usize = 24; // security parameter in bytes
-const H: usize = 63; // total hypertree height
-const D: usize = 7; // number of hypertree layers
-const HP: usize = H / D; // height of a single XMSS tree (h', = 9)
-const A: usize = 14; // height of a FORS tree
-const K: usize = 17; // number of FORS trees
-const LGW: usize = 4; // log2 of the Winternitz parameter
-const W: u32 = 1 << LGW; // Winternitz parameter (16)
-const LEN1: usize = (8 * N + LGW - 1) / LGW; // 48
-const LEN2: usize = 3; // checksum chain count
-const LEN: usize = LEN1 + LEN2; // 51 WOTS+ chains
+const N: usize = 24;
+const H: usize = 63;
+const D: usize = 7;
+const HP: usize = H / D;
+const A: usize = 14;
+const K: usize = 17;
+const LGW: usize = 4;
+const W: u32 = 1 << LGW;
+const LEN1: usize = (8 * N + LGW - 1) / LGW;
+const LEN2: usize = 3;
+const LEN: usize = LEN1 + LEN2;
 
-const MD_BYTES: usize = (K * A + 7) / 8; // 30, feeds the FORS message indices
-const TREE_BYTES: usize = (H - HP + 7) / 8; // 7, feeds the hypertree address
-const LEAF_BYTES: usize = (HP + 7) / 8; // 2, feeds the leaf address
-const DIGEST_BYTES: usize = MD_BYTES + TREE_BYTES + LEAF_BYTES; // 39
+const MD_BYTES: usize = (K * A + 7) / 8;
+const TREE_BYTES: usize = (H - HP + 7) / 8;
+const LEAF_BYTES: usize = (HP + 7) / 8;
+const DIGEST_BYTES: usize = MD_BYTES + TREE_BYTES + LEAF_BYTES;
 
-const XMSS_SIG_BYTES: usize = (LEN + HP) * N; // 1440
-const FORS_SIG_BYTES: usize = K * (1 + A) * N; // 6120
+const XMSS_SIG_BYTES: usize = (LEN + HP) * N;
+const FORS_SIG_BYTES: usize = K * (1 + A) * N;
 
-pub const PUBLIC_KEY_BYTES: usize = 2 * N; // 48
-pub const SECRET_KEY_BYTES: usize = 4 * N; // 96
-pub const SIGNATURE_BYTES: usize = N + FORS_SIG_BYTES + D * XMSS_SIG_BYTES; // 16224
+pub const PUBLIC_KEY_BYTES: usize = 2 * N;
+pub const SECRET_KEY_BYTES: usize = 4 * N;
+pub const SIGNATURE_BYTES: usize = N + FORS_SIG_BYTES + D * XMSS_SIG_BYTES;
 
 const WOTS_HASH: u32 = 0;
 const WOTS_PK: u32 = 1;

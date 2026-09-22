@@ -61,8 +61,6 @@ fn os_fill(_buf: &mut [u8]) -> bool {
     false
 }
 
-/// Kernel entropy, blocking until the pool is seeded, panicking rather than returning
-/// predictable bytes. Exported so no crate in the stack needs its own entropy path.
 pub fn fill_random(buf: &mut [u8]) {
     if os_fill(buf) {
         return;

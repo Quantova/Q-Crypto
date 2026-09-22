@@ -1,10 +1,6 @@
 // Copyright 2026 Quantova Inc
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-// Isolate the parallel signature verification from the harness and measure whether it
-// scales across the cores or plateaus. Verifies a fixed batch of module lattice
-// signatures across a range of thread counts, then optionally sustains the widest count
-// so an external sampler can read which cores actually fire.
 use qtv_crypto::ml_dsa;
 use std::thread;
 use std::time::{Duration, Instant};

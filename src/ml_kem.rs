@@ -4,19 +4,19 @@
 use crate::sha3::{sha3_256, sha3_512, shake128, shake256};
 use crate::zeroize::{Zeroize, Zeroizing};
 
-const Q: i32 = 3329; // prime modulus, 13 * 2^8 + 1
-const N: usize = 256; // ring degree
-const K: usize = 3; // module rank
-const ETA1: usize = 2; // secret and error CBD parameter
-const ETA2: usize = 2; // encryption error CBD parameter
-const DU: usize = 10; // ciphertext compression bits for u
-const DV: usize = 4; // ciphertext compression bits for v
+const Q: i32 = 3329;
+const N: usize = 256;
+const K: usize = 3;
+const ETA1: usize = 2;
+const ETA2: usize = 2;
+const DU: usize = 10;
+const DV: usize = 4;
 
-const POLY_BYTES: usize = 12 * N / 8; // 384
+const POLY_BYTES: usize = 12 * N / 8;
 
-pub const ENCAPS_KEY_BYTES: usize = K * POLY_BYTES + 32; // 1184
-pub const DECAPS_KEY_BYTES: usize = 2 * K * POLY_BYTES + 96; // 2400
-pub const CIPHERTEXT_BYTES: usize = 32 * (DU * K + DV); // 1088
+pub const ENCAPS_KEY_BYTES: usize = K * POLY_BYTES + 32;
+pub const DECAPS_KEY_BYTES: usize = 2 * K * POLY_BYTES + 96;
+pub const CIPHERTEXT_BYTES: usize = 32 * (DU * K + DV);
 pub const SHARED_SECRET_BYTES: usize = 32;
 pub const SEED_BYTES: usize = 32;
 

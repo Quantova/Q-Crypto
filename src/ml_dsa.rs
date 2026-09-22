@@ -4,29 +4,29 @@
 use crate::sha3::{shake128, shake256};
 use crate::zeroize::{SecretPolys, Zeroize, Zeroizing};
 
-const Q: i32 = 8380417; // prime modulus, 2^23 - 2^13 + 1
-const N: usize = 256; // ring degree
-const D: usize = 13; // number of dropped bits from t
-const K: usize = 6; // rows of A
-const L: usize = 5; // columns of A
-const ETA: i32 = 4; // secret coefficient range
-const TAU: usize = 49; // number of nonzero coefficients in the challenge
-const BETA: i32 = 196; // TAU * ETA
-const GAMMA1: i32 = 1 << 19; // coefficient range of the mask y
-const GAMMA2: i32 = (Q - 1) / 32; // low-order rounding range
-const OMEGA: usize = 55; // maximum number of ones in the hint
-const LAMBDA: usize = 192; // collision strength in bits
+const Q: i32 = 8380417;
+const N: usize = 256;
+const D: usize = 13;
+const K: usize = 6;
+const L: usize = 5;
+const ETA: i32 = 4;
+const TAU: usize = 49;
+const BETA: i32 = 196;
+const GAMMA1: i32 = 1 << 19;
+const GAMMA2: i32 = (Q - 1) / 32;
+const OMEGA: usize = 55;
+const LAMBDA: usize = 192;
 
-const CTILDE_BYTES: usize = LAMBDA / 4; // 48
-const POLYT1_PACKED: usize = 320; // 10 bits per coefficient
-const POLYT0_PACKED: usize = 416; // 13 bits per coefficient
-const POLYETA_PACKED: usize = 128; // 4 bits per coefficient
-const POLYZ_PACKED: usize = 640; // 20 bits per coefficient
-const POLYW1_PACKED: usize = 128; // 4 bits per coefficient
+const CTILDE_BYTES: usize = LAMBDA / 4;
+const POLYT1_PACKED: usize = 320;
+const POLYT0_PACKED: usize = 416;
+const POLYETA_PACKED: usize = 128;
+const POLYZ_PACKED: usize = 640;
+const POLYW1_PACKED: usize = 128;
 
-pub const PUBLIC_KEY_BYTES: usize = 32 + K * POLYT1_PACKED; // 1952
-pub const SECRET_KEY_BYTES: usize = 128 + (L + K) * POLYETA_PACKED + K * POLYT0_PACKED; // 4032
-pub const SIGNATURE_BYTES: usize = CTILDE_BYTES + L * POLYZ_PACKED + OMEGA + K; // 3309
+pub const PUBLIC_KEY_BYTES: usize = 32 + K * POLYT1_PACKED;
+pub const SECRET_KEY_BYTES: usize = 128 + (L + K) * POLYETA_PACKED + K * POLYT0_PACKED;
+pub const SIGNATURE_BYTES: usize = CTILDE_BYTES + L * POLYZ_PACKED + OMEGA + K;
 pub const SEED_BYTES: usize = 32;
 
 pub type PublicKey = [u8; PUBLIC_KEY_BYTES];
@@ -1537,11 +1537,6 @@ mod hint_encoding_tests {
     use super::tests::signature_carrying_a_hint;
     use super::*;
 
-    // FIPS 204 Algorithm 21 makes three demands of an encoded hint. The per polynomial
-    // limits rise and stay within OMEGA, the indices inside one polynomial strictly
-    // increase, and every unused byte is zero. Drop any one of them and a signature gains
-    // a second valid encoding, which is signature malleability, and a transaction id that
-    // hashes the signature stops being unique.
     fn honest_hint_bytes() -> Vec<u8> {
         let (_pk, sk) = keygen(&[0x42u8; 32]);
         let context = b"qtv-hint";

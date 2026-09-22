@@ -1,8 +1,3 @@
-# Quantova secret scan allowlist for Q-Crypto.
-# The values a naive scanner flags here are published NIST test vectors and Rust
-# type constants, not secrets. Real keys are generated at runtime into a local
-# keystore that is never committed.
-
 [extend]
 useDefault = true
 
