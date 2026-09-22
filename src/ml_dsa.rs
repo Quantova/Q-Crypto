@@ -75,12 +75,13 @@ fn center(a: i32) -> i32 {
 }
 
 fn inf_norm(p: &Poly) -> i32 {
-    let mut max = 0;
+    let mut max = 0i32;
     for &c in p.iter() {
-        let v = center(c).abs();
-        if v > max {
-            max = v;
-        }
+        let x = center(c);
+        let sign = x >> 31;
+        let v = (x ^ sign) - sign;
+        let take = (max - v) >> 31;
+        max = (v & take) | (max & !take);
     }
     max
 }
@@ -1514,7 +1515,15 @@ mod tests {
         let (_, sk) = keygen(&seed);
         let sc = sk_decode(&sk);
         let mut reencoded = [0u8; SECRET_KEY_BYTES];
-        sk_encode_into(&sc.rho, &sc.key, &sc.tr, &sc.s1, &sc.s2, &sc.t0, &mut reencoded);
+        sk_encode_into(
+            &sc.rho,
+            &sc.key,
+            &sc.tr,
+            &sc.s1,
+            &sc.s2,
+            &sc.t0,
+            &mut reencoded,
+        );
         assert_eq!(
             &reencoded[..],
             &sk[..],

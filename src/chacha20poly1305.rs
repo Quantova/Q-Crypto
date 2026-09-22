@@ -1,7 +1,7 @@
 // Copyright 2026 Quantova Inc
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-use crate::zeroize::Zeroizing;
+use crate::zeroize::{Zeroize, Zeroizing};
 
 pub const KEY_BYTES: usize = 32;
 pub const NONCE_BYTES: usize = 12;
@@ -52,6 +52,8 @@ fn chacha20_block(key: &[u8; KEY_BYTES], counter: u32, nonce: &[u8; NONCE_BYTES]
         let sum = word.wrapping_add(*base);
         out[4 * i..4 * i + 4].copy_from_slice(&sum.to_le_bytes());
     }
+    state.zeroize();
+    init.zeroize();
     out
 }
 
@@ -67,10 +69,11 @@ pub fn chacha20(key: &[u8; KEY_BYTES], counter: u32, nonce: &[u8; NONCE_BYTES], 
     }
 
     for (i, chunk) in data.chunks_mut(64).enumerate() {
-        let block = chacha20_block(key, counter.wrapping_add(i as u32), nonce);
+        let mut block = chacha20_block(key, counter.wrapping_add(i as u32), nonce);
         for (b, k) in chunk.iter_mut().zip(block.iter()) {
             *b ^= *k;
         }
+        block.zeroize();
     }
 }
 
@@ -85,17 +88,19 @@ unsafe fn chacha20_avx2(
     let mut blk = counter;
     let mut chunks = data.chunks_exact_mut(512);
     for chunk in chunks.by_ref() {
-        let keystream = unsafe { chacha20_8block(key, blk, nonce) };
+        let mut keystream = unsafe { chacha20_8block(key, blk, nonce) };
         for (b, k) in chunk.iter_mut().zip(keystream.iter()) {
             *b ^= *k;
         }
+        keystream.zeroize();
         blk = blk.wrapping_add(8);
     }
     for (i, chunk) in chunks.into_remainder().chunks_mut(64).enumerate() {
-        let block = chacha20_block(key, blk.wrapping_add(i as u32), nonce);
+        let mut block = chacha20_block(key, blk.wrapping_add(i as u32), nonce);
         for (b, k) in chunk.iter_mut().zip(block.iter()) {
             *b ^= *k;
         }
+        block.zeroize();
     }
 }
 
@@ -256,8 +261,8 @@ pub fn poly1305(key: &[u8; 32], message: &[u8]) -> [u8; TAG_BYTES] {
     let r2 = ((load_u32(&key[6..]) >> 4) & 67092735) as u64;
     let r3 = ((load_u32(&key[9..]) >> 6) & 66076671) as u64;
     let r4 = ((load_u32(&key[12..]) >> 8) & 1048575) as u64;
-    let r = [r0, r1, r2, r3, r4];
-    let s = [r1 * 5, r2 * 5, r3 * 5, r4 * 5];
+    let mut r = [r0, r1, r2, r3, r4];
+    let mut s = [r1 * 5, r2 * 5, r3 * 5, r4 * 5];
 
     let mut h = [0u64; 5];
     let mut blocks = message.chunks_exact(16);
@@ -331,13 +336,18 @@ pub fn poly1305(key: &[u8; 32], message: &[u8]) -> [u8; TAG_BYTES] {
     tag[4..8].copy_from_slice(&(h[1] as u32).to_le_bytes());
     tag[8..12].copy_from_slice(&(h[2] as u32).to_le_bytes());
     tag[12..16].copy_from_slice(&(h[3] as u32).to_le_bytes());
+    r.zeroize();
+    s.zeroize();
+    h.zeroize();
+    g.zeroize();
     tag
 }
 
 fn poly1305_key_gen(key: &[u8; KEY_BYTES], nonce: &[u8; NONCE_BYTES]) -> [u8; 32] {
-    let block = chacha20_block(key, 0, nonce);
+    let mut block = chacha20_block(key, 0, nonce);
     let mut otk = [0u8; 32];
     otk.copy_from_slice(&block[..32]);
+    block.zeroize();
     otk
 }
 

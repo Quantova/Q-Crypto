@@ -25,6 +25,15 @@ impl Zeroize for [i32] {
     }
 }
 
+impl Zeroize for [u32] {
+    fn zeroize(&mut self) {
+        for slot in self.iter_mut() {
+            unsafe { core::ptr::write_volatile(slot, 0) }
+        }
+        compiler_fence(Ordering::SeqCst);
+    }
+}
+
 impl Zeroize for [u64] {
     fn zeroize(&mut self) {
         for slot in self.iter_mut() {
