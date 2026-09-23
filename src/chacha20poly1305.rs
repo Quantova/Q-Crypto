@@ -374,17 +374,22 @@ fn constant_time_eq(a: &[u8; TAG_BYTES], b: &[u8; TAG_BYTES]) -> bool {
     diff == 0
 }
 
+pub const MAX_AEAD_PLAINTEXT: usize = ((1u64 << 32) - 1) as usize * 64;
+
 pub fn seal(
     key: &[u8; KEY_BYTES],
     nonce: &[u8; NONCE_BYTES],
     aad: &[u8],
     plaintext: &[u8],
-) -> (Vec<u8>, [u8; TAG_BYTES]) {
+) -> Option<(Vec<u8>, [u8; TAG_BYTES])> {
+    if plaintext.len() > MAX_AEAD_PLAINTEXT {
+        return None;
+    }
     let otk = Zeroizing::new(poly1305_key_gen(key, nonce));
     let mut ciphertext = plaintext.to_vec();
     chacha20(key, 1, nonce, &mut ciphertext);
     let tag = poly1305(&otk, &mac_data(aad, &ciphertext));
-    (ciphertext, tag)
+    Some((ciphertext, tag))
 }
 
 pub fn open(
@@ -394,6 +399,9 @@ pub fn open(
     ciphertext: &[u8],
     tag: &[u8; TAG_BYTES],
 ) -> Option<Vec<u8>> {
+    if ciphertext.len() > MAX_AEAD_PLAINTEXT {
+        return None;
+    }
     let otk = Zeroizing::new(poly1305_key_gen(key, nonce));
     let expected = poly1305(&otk, &mac_data(aad, ciphertext));
     if !constant_time_eq(&expected, tag) {
@@ -553,7 +561,8 @@ mod tests {
     #[test]
     fn aead_seal_vector() {
         let v = aead_vector();
-        let (ciphertext, tag) = seal(&v.key, &v.nonce, &v.aad, &v.plaintext);
+        let (ciphertext, tag) =
+            seal(&v.key, &v.nonce, &v.aad, &v.plaintext).expect("inside the aead length bound");
         assert_eq!(ciphertext[..], v.ciphertext[..]);
         assert_eq!(tag[..], v.tag[..]);
     }
@@ -571,7 +580,8 @@ mod tests {
         let nonce: [u8; NONCE_BYTES] = hex("000102030405060708090a0b").try_into().unwrap();
         let aad = b"quantova transport header";
         let plaintext = b"authenticated payload of arbitrary length";
-        let (ciphertext, tag) = seal(&key, &nonce, aad, plaintext);
+        let (ciphertext, tag) =
+            seal(&key, &nonce, aad, plaintext).expect("inside the aead length bound");
         let opened = open(&key, &nonce, aad, &ciphertext, &tag);
         assert_eq!(opened.as_deref(), Some(&plaintext[..]));
     }
@@ -611,8 +621,10 @@ mod tests {
     #[test]
     fn seal_is_stable_for_fixed_inputs() {
         let v = aead_vector();
-        let first = seal(&v.key, &v.nonce, &v.aad, &v.plaintext);
-        let second = seal(&v.key, &v.nonce, &v.aad, &v.plaintext);
+        let first =
+            seal(&v.key, &v.nonce, &v.aad, &v.plaintext).expect("inside the aead length bound");
+        let second =
+            seal(&v.key, &v.nonce, &v.aad, &v.plaintext).expect("inside the aead length bound");
         assert_eq!(first.0, second.0);
         assert_eq!(first.1, second.1);
     }

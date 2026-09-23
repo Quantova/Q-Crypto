@@ -466,7 +466,21 @@ pub fn keygen(
     (sk, pk)
 }
 
+#[cfg(any(test, feature = "acvp-internals"))]
 pub fn sign_internal(
+    sk: &[u8; SECRET_KEY_BYTES],
+    message: &[u8],
+    addrnd: &[u8; N],
+) -> [u8; SIGNATURE_BYTES] {
+    sign_internal_impl(sk, message, addrnd)
+}
+
+#[cfg(any(test, feature = "acvp-internals"))]
+pub fn verify_internal(pk: &[u8; PUBLIC_KEY_BYTES], message: &[u8], sig: &[u8]) -> bool {
+    verify_internal_impl(pk, message, sig)
+}
+
+pub(crate) fn sign_internal_impl(
     sk: &[u8; SECRET_KEY_BYTES],
     message: &[u8],
     addrnd: &[u8; N],
@@ -499,7 +513,11 @@ pub fn sign_internal(
     sig
 }
 
-pub fn verify_internal(pk: &[u8; PUBLIC_KEY_BYTES], message: &[u8], sig: &[u8]) -> bool {
+pub(crate) fn verify_internal_impl(
+    pk: &[u8; PUBLIC_KEY_BYTES],
+    message: &[u8],
+    sig: &[u8],
+) -> bool {
     if sig.len() != SIGNATURE_BYTES {
         return false;
     }
@@ -544,7 +562,7 @@ pub fn sign(
     addrnd: &[u8; N],
 ) -> Option<[u8; SIGNATURE_BYTES]> {
     let framed = with_context(context, message)?;
-    Some(sign_internal(sk, &framed, addrnd))
+    Some(sign_internal_impl(sk, &framed, addrnd))
 }
 
 #[cfg(feature = "os-rng")]
@@ -577,7 +595,7 @@ pub fn sign_os(
 
 pub fn verify(pk: &[u8; PUBLIC_KEY_BYTES], message: &[u8], sig: &[u8], context: &[u8]) -> bool {
     match with_context(context, message) {
-        Some(framed) => verify_internal(pk, &framed, sig),
+        Some(framed) => verify_internal_impl(pk, &framed, sig),
         None => false,
     }
 }

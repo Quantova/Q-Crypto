@@ -61,15 +61,18 @@ fn os_fill(_buf: &mut [u8]) -> bool {
     false
 }
 
-pub fn fill_random(buf: &mut [u8]) {
+pub fn try_fill_random(buf: &mut [u8]) -> std::io::Result<()> {
     if os_fill(buf) {
-        return;
+        return Ok(());
     }
-    let mut file = File::open("/dev/urandom").expect(
+    let mut file = File::open("/dev/urandom")?;
+    file.read_exact(buf)
+}
+
+pub fn fill_random(buf: &mut [u8]) {
+    try_fill_random(buf).expect(
         "Q-Crypto: no OS entropy source (CSPRNG syscall and /dev/urandom both unavailable)",
     );
-    file.read_exact(buf)
-        .expect("Q-Crypto: short read from /dev/urandom");
 }
 
 #[cfg(test)]

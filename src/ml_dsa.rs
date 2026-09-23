@@ -774,6 +774,9 @@ fn sign_with_mu(sk: &SecretKey, mu: &[u8], rnd: &[u8; 32]) -> Signature {
         let c_tilde = shake256_bytes(&ch_in, CTILDE_BYTES);
         let c = sample_in_ball(&c_tilde);
         let mut c_hat = c;
+        for coeff in c_hat.iter_mut() {
+            *coeff = to_pos(*coeff);
+        }
         ntt(&mut c_hat);
 
         let mut z = SecretPolys::new(vec![ZERO_POLY; L]);
@@ -839,13 +842,23 @@ fn compute_mu(tr: &[u8], m_prime: &[u8]) -> Vec<u8> {
     shake256_bytes(&buf, 64)
 }
 
+#[cfg(any(test, feature = "acvp-internals"))]
 pub fn sign_internal(sk: &SecretKey, m_prime: &[u8], rnd: &[u8; 32]) -> Signature {
+    sign_internal_impl(sk, m_prime, rnd)
+}
+
+#[cfg(any(test, feature = "acvp-internals"))]
+pub fn verify_internal(pk: &PublicKey, m_prime: &[u8], sig: &Signature) -> bool {
+    verify_internal_impl(pk, m_prime, sig)
+}
+
+pub(crate) fn sign_internal_impl(sk: &SecretKey, m_prime: &[u8], rnd: &[u8; 32]) -> Signature {
     let sc = sk_decode(sk);
     let mu = compute_mu(&sc.tr, m_prime);
     sign_with_mu(sk, &mu, rnd)
 }
 
-pub fn verify_internal(pk: &PublicKey, m_prime: &[u8], sig: &Signature) -> bool {
+pub(crate) fn verify_internal_impl(pk: &PublicKey, m_prime: &[u8], sig: &Signature) -> bool {
     let tr = shake256_bytes(pk, 64);
     let mu = compute_mu(&tr, m_prime);
     verify_with_mu(pk, &mu, sig)
@@ -871,6 +884,9 @@ fn verify_with_mu(pk: &PublicKey, mu: &[u8], sig: &Signature) -> bool {
     let a = expand_a(&rho);
     let c = sample_in_ball(&decoded.c_tilde);
     let mut c_hat = c;
+    for coeff in c_hat.iter_mut() {
+        *coeff = to_pos(*coeff);
+    }
     ntt(&mut c_hat);
 
     let mut z_hat = decoded.z.clone();
@@ -928,7 +944,7 @@ fn format_message(context: &[u8], message: &[u8]) -> Option<Vec<u8>> {
 
 pub fn sign(sk: &SecretKey, message: &[u8], context: &[u8], rnd: &[u8; 32]) -> Option<Signature> {
     let m_prime = format_message(context, message)?;
-    Some(sign_internal(sk, &m_prime, rnd))
+    Some(sign_internal_impl(sk, &m_prime, rnd))
 }
 
 #[cfg(feature = "os-rng")]
@@ -954,7 +970,7 @@ pub fn verify(pk: &PublicKey, message: &[u8], signature: &Signature, context: &[
         Some(m) => m,
         None => return false,
     };
-    verify_internal(pk, &m_prime, signature)
+    verify_internal_impl(pk, &m_prime, signature)
 }
 
 #[cfg(test)]

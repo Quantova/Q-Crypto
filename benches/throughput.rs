@@ -144,7 +144,8 @@ fn main() {
         }
         report("chacha20_seal", iters, start.elapsed());
     }
-    let (aead_ct, aead_tag) = chacha20poly1305::seal(&aead_key, &aead_nonce, &aead_aad, &aead_pt);
+    let (aead_ct, aead_tag) = chacha20poly1305::seal(&aead_key, &aead_nonce, &aead_aad, &aead_pt)
+        .expect("inside the aead length bound");
     {
         let iters = 100_000u32;
         let start = Instant::now();
