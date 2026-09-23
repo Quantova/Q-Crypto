@@ -374,7 +374,11 @@ fn constant_time_eq(a: &[u8; TAG_BYTES], b: &[u8; TAG_BYTES]) -> bool {
     diff == 0
 }
 
-pub const MAX_AEAD_PLAINTEXT: usize = ((1u64 << 32) - 1) as usize * 64;
+pub const MAX_AEAD_PLAINTEXT: usize = if usize::BITS >= 64 {
+    (((1u64 << 32) - 1) * 64) as usize
+} else {
+    usize::MAX
+};
 
 pub fn seal(
     key: &[u8; KEY_BYTES],
@@ -415,6 +419,22 @@ pub fn open(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_aead_bound_fits_the_target_word() {
+        if usize::BITS >= 64 {
+            assert_eq!(
+                MAX_AEAD_PLAINTEXT as u64,
+                ((1u64 << 32) - 1) * 64,
+                "a sixty four bit target carries the exact counter bound"
+            );
+        }
+        let blocks = MAX_AEAD_PLAINTEXT as u64 / 64;
+        assert!(
+            blocks < (1u64 << 32),
+            "the bound must stay under the block counter wrap"
+        );
+    }
 
     fn hex(s: &str) -> Vec<u8> {
         assert!(s.len() % 2 == 0);
