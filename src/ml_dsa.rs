@@ -503,7 +503,7 @@ impl core::fmt::Debug for SecretComponents {
     }
 }
 
-fn sk_decode(sk: &SecretKey) -> SecretComponents {
+fn sk_decode(sk: &SecretKey) -> Option<SecretComponents> {
     let mut rho = [0u8; 32];
     rho.copy_from_slice(&sk[..32]);
     let mut key = [0u8; 32];
@@ -516,6 +516,10 @@ fn sk_decode(sk: &SecretKey) -> SecretComponents {
     for poly in s1.iter_mut() {
         let mut raw = unpack_bits(&sk[off..off + POLYETA_PACKED], 4);
         for i in 0..N {
+            if raw[i] > 2 * ETA {
+                raw[..].zeroize();
+                return None;
+            }
             poly[i] = ETA - raw[i];
         }
         raw[..].zeroize();
@@ -525,6 +529,10 @@ fn sk_decode(sk: &SecretKey) -> SecretComponents {
     for poly in s2.iter_mut() {
         let mut raw = unpack_bits(&sk[off..off + POLYETA_PACKED], 4);
         for i in 0..N {
+            if raw[i] > 2 * ETA {
+                raw[..].zeroize();
+                return None;
+            }
             poly[i] = ETA - raw[i];
         }
         raw[..].zeroize();
@@ -539,14 +547,14 @@ fn sk_decode(sk: &SecretKey) -> SecretComponents {
         raw[..].zeroize();
         off += POLYT0_PACKED;
     }
-    SecretComponents {
+    Some(SecretComponents {
         rho,
         key,
         tr,
         s1,
         s2,
         t0,
-    }
+    })
 }
 
 fn w1_encode(w1: &[Poly]) -> Vec<u8> {
@@ -711,8 +719,8 @@ pub fn keygen_into(seed: &[u8; SEED_BYTES], sk: &mut SecretKey) -> PublicKey {
     pk
 }
 
-fn sign_with_mu(sk: &SecretKey, mu: &[u8], rnd: &[u8; 32]) -> Signature {
-    let sc = sk_decode(sk);
+fn sign_with_mu(sk: &SecretKey, mu: &[u8], rnd: &[u8; 32]) -> Option<Signature> {
+    let sc = sk_decode(sk)?;
     let a = expand_a(&sc.rho);
 
     let mut s1_hat = SecretPolys::new(sc.s1.clone());
@@ -831,7 +839,7 @@ fn sign_with_mu(sk: &SecretKey, mu: &[u8], rnd: &[u8; 32]) -> Signature {
             continue;
         }
 
-        return sig_encode(&c_tilde, &z, &h);
+        return Some(sig_encode(&c_tilde, &z, &h));
     }
 }
 
@@ -844,7 +852,7 @@ fn compute_mu(tr: &[u8], m_prime: &[u8]) -> Vec<u8> {
 
 #[cfg(any(test, feature = "acvp-internals"))]
 pub fn sign_internal(sk: &SecretKey, m_prime: &[u8], rnd: &[u8; 32]) -> Signature {
-    sign_internal_impl(sk, m_prime, rnd)
+    sign_internal_impl(sk, m_prime, rnd).expect("a key produced by keygen decodes")
 }
 
 #[cfg(any(test, feature = "acvp-internals"))]
@@ -852,8 +860,12 @@ pub fn verify_internal(pk: &PublicKey, m_prime: &[u8], sig: &Signature) -> bool 
     verify_internal_impl(pk, m_prime, sig)
 }
 
-pub(crate) fn sign_internal_impl(sk: &SecretKey, m_prime: &[u8], rnd: &[u8; 32]) -> Signature {
-    let sc = sk_decode(sk);
+pub(crate) fn sign_internal_impl(
+    sk: &SecretKey,
+    m_prime: &[u8],
+    rnd: &[u8; 32],
+) -> Option<Signature> {
+    let sc = sk_decode(sk)?;
     let mu = compute_mu(&sc.tr, m_prime);
     sign_with_mu(sk, &mu, rnd)
 }
@@ -944,7 +956,7 @@ fn format_message(context: &[u8], message: &[u8]) -> Option<Vec<u8>> {
 
 pub fn sign(sk: &SecretKey, message: &[u8], context: &[u8], rnd: &[u8; 32]) -> Option<Signature> {
     let m_prime = format_message(context, message)?;
-    Some(sign_internal_impl(sk, &m_prime, rnd))
+    sign_internal_impl(sk, &m_prime, rnd)
 }
 
 #[cfg(feature = "os-rng")]
@@ -1282,7 +1294,7 @@ mod tests {
     fn secret_components_debug_is_redacted() {
         let seed = [1u8; 32];
         let (_, sk) = keygen(&seed);
-        let components = sk_decode(&sk);
+        let components = sk_decode(&sk).expect("a key produced by keygen decodes");
         assert_eq!(format!("{:?}", components), "SecretComponents(redacted)");
     }
 
@@ -1529,7 +1541,7 @@ mod tests {
     fn secret_key_scratch_wipe_preserves_round_trip() {
         let seed = [13u8; 32];
         let (_, sk) = keygen(&seed);
-        let sc = sk_decode(&sk);
+        let sc = sk_decode(&sk).expect("a key produced by keygen decodes");
         let mut reencoded = [0u8; SECRET_KEY_BYTES];
         sk_encode_into(
             &sc.rho,
@@ -1631,6 +1643,23 @@ mod hint_encoding_tests {
             hint_bit_unpack(&y).is_none(),
             "a nonzero byte past the last used index must be refused, otherwise one signature \
              has many encodings and becomes malleable"
+        );
+    }
+
+    #[test]
+    fn a_secret_key_holding_a_coefficient_past_the_bound_is_refused() {
+        let (_, mut sk) = keygen(&[3u8; 32]);
+        assert!(sign(&sk, b"m", b"", &[0u8; 32]).is_some());
+        for byte in sk[128..768].iter_mut() {
+            *byte = 0xff;
+        }
+        assert!(
+            sk_decode(&sk).is_none(),
+            "a nibble of fifteen is outside the range the scheme defines"
+        );
+        assert!(
+            sign(&sk, b"m", b"", &[0u8; 32]).is_none(),
+            "a key that does not decode is refused rather than signed with"
         );
     }
 }
