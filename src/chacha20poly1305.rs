@@ -199,7 +199,7 @@ unsafe fn chacha20_8block(
         x14 = _mm256_add_epi32(x14, init[14]);
         x15 = _mm256_add_epi32(x15, init[15]);
 
-        let state = [
+        let mut state = [
             x0, x1, x2, x3, x4, x5, x6, x7, x8, x9, x10, x11, x12, x13, x14, x15,
         ];
         let mut words = [[0u32; 8]; 16];
@@ -213,6 +213,13 @@ unsafe fn chacha20_8block(
                 out[off..off + 4].copy_from_slice(&words[k][blk].to_le_bytes());
             }
         }
+        let zero = _mm256_setzero_si256();
+        for k in 0..16 {
+            core::ptr::write_volatile(&mut init[k], zero);
+            core::ptr::write_volatile(&mut state[k], zero);
+            words[k][..].zeroize();
+        }
+        core::sync::atomic::compiler_fence(core::sync::atomic::Ordering::SeqCst);
         out
     }
 }
