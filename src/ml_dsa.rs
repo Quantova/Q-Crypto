@@ -883,6 +883,10 @@ fn verify_with_mu(pk: &PublicKey, mu: &[u8], sig: &Signature) -> bool {
     };
     let (rho, t1) = pk_decode(pk);
 
+    if t1.iter().all(|poly| poly.iter().all(|&c| c == 0)) {
+        return false;
+    }
+
     let mut z_norm = 0i32;
     for poly in decoded.z.iter() {
         for &c in poly.iter() {
