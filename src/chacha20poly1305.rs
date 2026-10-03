@@ -57,7 +57,7 @@ fn chacha20_block(key: &[u8; KEY_BYTES], counter: u32, nonce: &[u8; NONCE_BYTES]
     out
 }
 
-pub fn chacha20(key: &[u8; KEY_BYTES], counter: u32, nonce: &[u8; NONCE_BYTES], data: &mut [u8]) {
+pub(crate) fn chacha20(key: &[u8; KEY_BYTES], counter: u32, nonce: &[u8; NONCE_BYTES], data: &mut [u8]) {
     #[cfg(target_arch = "x86_64")]
     {
         if is_x86_feature_detected!("avx2") {
@@ -262,7 +262,7 @@ fn poly1305_block(h: &mut [u64; 5], block: &[u8], hibit: u64, r: &[u64; 5], s: &
     h[1] += c;
 }
 
-pub fn poly1305(key: &[u8; 32], message: &[u8]) -> [u8; TAG_BYTES] {
+pub(crate) fn poly1305(key: &[u8; 32], message: &[u8]) -> [u8; TAG_BYTES] {
     let r0 = (load_u32(&key[0..]) & 67108863) as u64;
     let r1 = ((load_u32(&key[3..]) >> 2) & 67108611) as u64;
     let r2 = ((load_u32(&key[6..]) >> 4) & 67092735) as u64;

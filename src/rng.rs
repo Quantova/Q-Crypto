@@ -48,6 +48,37 @@ fn os_fill(buf: &mut [u8]) -> bool {
     true
 }
 
+#[cfg(target_os = "windows")]
+fn os_fill(buf: &mut [u8]) -> bool {
+    #[link(name = "bcrypt")]
+    extern "system" {
+        fn BCryptGenRandom(
+            h_algorithm: *mut core::ffi::c_void,
+            pb_buffer: *mut u8,
+            cb_buffer: u32,
+            dw_flags: u32,
+        ) -> i32;
+    }
+    const BCRYPT_USE_SYSTEM_PREFERRED_RNG: u32 = 0x0000_0002;
+    let mut filled = 0usize;
+    while filled < buf.len() {
+        let chunk = core::cmp::min(buf.len() - filled, u32::MAX as usize);
+        let status = unsafe {
+            BCryptGenRandom(
+                core::ptr::null_mut(),
+                buf[filled..].as_mut_ptr(),
+                chunk as u32,
+                BCRYPT_USE_SYSTEM_PREFERRED_RNG,
+            )
+        };
+        if status != 0 {
+            return false;
+        }
+        filled += chunk;
+    }
+    true
+}
+
 #[cfg(not(any(
     target_os = "linux",
     target_os = "macos",
@@ -55,7 +86,8 @@ fn os_fill(buf: &mut [u8]) -> bool {
     target_os = "freebsd",
     target_os = "openbsd",
     target_os = "netbsd",
-    target_os = "dragonfly"
+    target_os = "dragonfly",
+    target_os = "windows"
 )))]
 fn os_fill(_buf: &mut [u8]) -> bool {
     false
