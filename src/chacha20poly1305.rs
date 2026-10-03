@@ -57,7 +57,12 @@ fn chacha20_block(key: &[u8; KEY_BYTES], counter: u32, nonce: &[u8; NONCE_BYTES]
     out
 }
 
-pub(crate) fn chacha20(key: &[u8; KEY_BYTES], counter: u32, nonce: &[u8; NONCE_BYTES], data: &mut [u8]) {
+pub(crate) fn chacha20(
+    key: &[u8; KEY_BYTES],
+    counter: u32,
+    nonce: &[u8; NONCE_BYTES],
+    data: &mut [u8],
+) {
     #[cfg(target_arch = "x86_64")]
     {
         if is_x86_feature_detected!("avx2") {
