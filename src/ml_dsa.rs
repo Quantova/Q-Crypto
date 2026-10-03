@@ -188,12 +188,13 @@ fn power2round(r: i32) -> (i32, i32) {
 }
 
 fn decompose(r: i32) -> (i32, i32) {
-    let mut r0 = r % (2 * GAMMA2);
+    let q0 = (((r as i64) * 8396809) >> 42) as i32;
+    let mut r0 = r - q0 * (2 * GAMMA2);
     let low_mask = (GAMMA2 - r0) >> 31;
     r0 -= low_mask & (2 * GAMMA2);
     let diff = (r - r0) - (Q - 1);
     let is_boundary = !((diff | diff.wrapping_neg()) >> 31);
-    let r1 = ((r - r0) / (2 * GAMMA2)) & !is_boundary;
+    let r1 = (((r - r0) as i64 * 8396809) >> 42) as i32 & !is_boundary;
     r0 -= is_boundary & 1;
     (r1, r0)
 }

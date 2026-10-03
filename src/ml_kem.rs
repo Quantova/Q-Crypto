@@ -170,7 +170,8 @@ fn pointwise_acc(acc: &mut Poly, a: &Poly, b: &Poly) {
 
 fn compress(x: i32, d: usize) -> i32 {
     let t = ((x as u32) << d) + (Q as u32) / 2;
-    ((t / Q as u32) & ((1u32 << d) - 1)) as i32
+    let q = ((t as u64 * 2580335) >> 33) as u32;
+    (q & ((1u32 << d) - 1)) as i32
 }
 
 fn decompress(y: i32, d: usize) -> i32 {
@@ -215,7 +216,8 @@ fn unpack_bits(data: &[u8], bits: usize) -> Poly {
 fn byte_decode_12(data: &[u8]) -> Poly {
     let mut p = unpack_bits(data, 12);
     for c in p.iter_mut() {
-        *c %= Q;
+        let q = ((*c as u32 * 315) >> 20) as i32;
+        *c -= q * Q;
     }
     p
 }
@@ -264,7 +266,8 @@ fn sample_poly_cbd(bytes: &[u8], eta: usize) -> Poly {
             x += bit(2 * i * eta + j);
             y += bit(2 * i * eta + eta + j);
         }
-        f[i] = (x - y).rem_euclid(Q);
+        let d = x - y;
+        f[i] = d + ((d >> 31) & Q);
     }
     f
 }
