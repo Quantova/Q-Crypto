@@ -377,7 +377,53 @@ fn expand_mask(rho_pp: &[u8], kappa: usize) -> Vec<Poly> {
 }
 
 fn sample_in_ball(c_tilde: &[u8]) -> Poly {
-    let mut buflen = SHAKE256_RATE * 2;
+    const BUFLEN: usize = SHAKE256_RATE * 2;
+    let mut buf = shake256_bytes(c_tilde, BUFLEN);
+    let mut signs: u64 = 0;
+    for (k, byte) in buf[..8].iter().enumerate() {
+        signs |= (*byte as u64) << (8 * k);
+    }
+    let mut c = ZERO_POLY;
+    let mut pos: i64 = 8;
+    let mut complete: i64 = -1;
+    for (bit, i) in (N - TAU..N).enumerate() {
+        let mut j: i64 = 0;
+        let mut next: i64 = pos;
+        let mut open: i64 = -1;
+        for (k, byte) in buf.iter().enumerate().skip(8) {
+            let k = k as i64;
+            let b = *byte as i64;
+            let take = !((k - pos) >> 63) & !((i as i64 - b) >> 63) & open;
+            j = (j & !take) | (b & take);
+            next = (next & !take) | ((k + 1) & take);
+            open &= !take;
+        }
+        complete &= !open;
+        pos = next;
+        let sign = 1 - 2 * ((signs >> bit) & 1) as i32;
+        let mut picked = 0i32;
+        for (m, slot) in c.iter().enumerate() {
+            let d = m as i64 ^ j;
+            let hit = !((d | d.wrapping_neg()) >> 63) as i32;
+            picked |= *slot & hit;
+        }
+        c[i] = picked;
+        for (m, slot) in c.iter_mut().enumerate() {
+            let d = m as i64 ^ j;
+            let hit = !((d | d.wrapping_neg()) >> 63) as i32;
+            *slot = (*slot & !hit) | (sign & hit);
+        }
+    }
+    buf[..].zeroize();
+    core::slice::from_mut(&mut signs).zeroize();
+    if complete != 0 {
+        return c;
+    }
+    sample_in_ball_extended(c_tilde)
+}
+
+fn sample_in_ball_extended(c_tilde: &[u8]) -> Poly {
+    let mut buflen = SHAKE256_RATE * 4;
     loop {
         let buf = shake256_bytes(c_tilde, buflen);
         let mut c = ZERO_POLY;
