@@ -566,14 +566,14 @@ pub fn sign(
 }
 
 #[cfg(feature = "os-rng")]
-pub fn keygen_os() -> ([u8; SECRET_KEY_BYTES], [u8; PUBLIC_KEY_BYTES]) {
+pub fn keygen_os() -> Option<([u8; SECRET_KEY_BYTES], [u8; PUBLIC_KEY_BYTES])> {
     let mut sk_seed = [0u8; N];
     let mut sk_prf = [0u8; N];
     let mut pk_seed = [0u8; N];
-    crate::rng::fill_random(&mut sk_seed);
-    crate::rng::fill_random(&mut sk_prf);
-    crate::rng::fill_random(&mut pk_seed);
-    let out = keygen(&sk_seed, &sk_prf, &pk_seed);
+    let drawn = crate::rng::try_fill_random(&mut sk_seed).is_ok()
+        && crate::rng::try_fill_random(&mut sk_prf).is_ok()
+        && crate::rng::try_fill_random(&mut pk_seed).is_ok();
+    let out = drawn.then(|| keygen(&sk_seed, &sk_prf, &pk_seed));
     sk_seed[..].zeroize();
     sk_prf[..].zeroize();
     pk_seed[..].zeroize();
@@ -587,7 +587,10 @@ pub fn sign_os(
     context: &[u8],
 ) -> Option<[u8; SIGNATURE_BYTES]> {
     let mut addrnd = [0u8; N];
-    crate::rng::fill_random(&mut addrnd);
+    if crate::rng::try_fill_random(&mut addrnd).is_err() {
+        addrnd[..].zeroize();
+        return None;
+    }
     let out = sign(sk, message, context, &addrnd);
     addrnd[..].zeroize();
     out
@@ -743,8 +746,8 @@ mod tests {
     #[cfg(feature = "os-rng")]
     #[test]
     fn os_helpers_are_distinct_and_round_trip() {
-        let (sk1, pk1) = keygen_os();
-        let (_sk2, pk2) = keygen_os();
+        let (sk1, pk1) = keygen_os().unwrap();
+        let (_sk2, pk2) = keygen_os().unwrap();
         assert_ne!(&pk1[..], &pk2[..], "OS keygen must not repeat public keys");
 
         let message = b"quantova os csprng";

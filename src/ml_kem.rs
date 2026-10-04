@@ -575,12 +575,12 @@ pub fn decaps(dk: &DecapsKey, c: &Ciphertext) -> SharedSecret {
 }
 
 #[cfg(feature = "os-rng")]
-pub fn keygen_os() -> (EncapsKey, DecapsKey) {
+pub fn keygen_os() -> Option<(EncapsKey, DecapsKey)> {
     let mut d = [0u8; SEED_BYTES];
     let mut z = [0u8; SEED_BYTES];
-    crate::rng::fill_random(&mut d);
-    crate::rng::fill_random(&mut z);
-    let out = keygen(&d, &z);
+    let drawn =
+        crate::rng::try_fill_random(&mut d).is_ok() && crate::rng::try_fill_random(&mut z).is_ok();
+    let out = drawn.then(|| keygen(&d, &z));
     d[..].zeroize();
     z[..].zeroize();
     out
@@ -589,7 +589,10 @@ pub fn keygen_os() -> (EncapsKey, DecapsKey) {
 #[cfg(feature = "os-rng")]
 pub fn encaps_os(ek: &EncapsKey) -> Option<(SharedSecret, Ciphertext)> {
     let mut m = [0u8; SEED_BYTES];
-    crate::rng::fill_random(&mut m);
+    if crate::rng::try_fill_random(&mut m).is_err() {
+        m[..].zeroize();
+        return None;
+    }
     let out = encaps(ek, &m);
     m[..].zeroize();
     out
@@ -881,8 +884,8 @@ mod tests {
     #[cfg(feature = "os-rng")]
     #[test]
     fn os_helpers_are_distinct_and_round_trip() {
-        let (ek1, dk1) = keygen_os();
-        let (ek2, _dk2) = keygen_os();
+        let (ek1, dk1) = keygen_os().unwrap();
+        let (ek2, _dk2) = keygen_os().unwrap();
         assert_ne!(
             &ek1[..],
             &ek2[..],

@@ -415,7 +415,7 @@ pub fn seal_os(
     plaintext: &[u8],
 ) -> Option<([u8; NONCE_BYTES], Vec<u8>, [u8; TAG_BYTES])> {
     let mut nonce = [0u8; NONCE_BYTES];
-    crate::rng::fill_random(&mut nonce);
+    crate::rng::try_fill_random(&mut nonce).ok()?;
     let (ciphertext, tag) = seal(key, &nonce, aad, plaintext)?;
     Some((nonce, ciphertext, tag))
 }
