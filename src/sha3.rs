@@ -30,91 +30,113 @@ const RC: [u64; 24] = [
     9223372039002292232,
 ];
 
-const RHO: [u32; 24] = [
-    1, 3, 6, 10, 15, 21, 28, 36, 45, 55, 2, 14, 27, 41, 56, 8, 25, 43, 62, 18, 39, 61, 20, 44,
-];
-
-const PI: [usize; 24] = [
-    10, 7, 11, 17, 18, 3, 5, 16, 8, 21, 24, 4, 15, 23, 19, 13, 12, 2, 20, 14, 22, 9, 6, 1,
-];
-
-fn qudros_f1600(state: &mut [u64; 25]) {
-    for round in 0..24 {
-        let mut c = [0u64; 5];
-        for x in 0..5 {
-            c[x] = state[x] ^ state[x + 5] ^ state[x + 10] ^ state[x + 15] ^ state[x + 20];
-        }
-        for x in 0..5 {
-            let d = c[(x + 4) % 5] ^ c[(x + 1) % 5].rotate_left(1);
-            for y in 0..5 {
-                state[x + 5 * y] ^= d;
-            }
-        }
-
-        let mut last = state[1];
-        for i in 0..24 {
-            let j = PI[i];
-            let tmp = state[j];
-            state[j] = last.rotate_left(RHO[i]);
-            last = tmp;
-        }
-
-        for y in 0..5 {
-            let row = y * 5;
-            let mut plane = [0u64; 5];
-            for x in 0..5 {
-                plane[x] = state[row + x];
-            }
-            for x in 0..5 {
-                state[row + x] = plane[x] ^ ((!plane[(x + 1) % 5]) & plane[(x + 2) % 5]);
-            }
-        }
-
-        state[0] ^= RC[round];
+fn qudros_f1600(a: &mut [u64; 25]) {
+    for rc in RC {
+        let c0 = a[0] ^ a[5] ^ a[10] ^ a[15] ^ a[20];
+        let c1 = a[1] ^ a[6] ^ a[11] ^ a[16] ^ a[21];
+        let c2 = a[2] ^ a[7] ^ a[12] ^ a[17] ^ a[22];
+        let c3 = a[3] ^ a[8] ^ a[13] ^ a[18] ^ a[23];
+        let c4 = a[4] ^ a[9] ^ a[14] ^ a[19] ^ a[24];
+        let d0 = c4 ^ c1.rotate_left(1);
+        let d1 = c0 ^ c2.rotate_left(1);
+        let d2 = c1 ^ c3.rotate_left(1);
+        let d3 = c2 ^ c4.rotate_left(1);
+        let d4 = c3 ^ c0.rotate_left(1);
+        let b0 = a[0] ^ d0;
+        let b1 = (a[6] ^ d1).rotate_left(44);
+        let b2 = (a[12] ^ d2).rotate_left(43);
+        let b3 = (a[18] ^ d3).rotate_left(21);
+        let b4 = (a[24] ^ d4).rotate_left(14);
+        let b5 = (a[3] ^ d3).rotate_left(28);
+        let b6 = (a[9] ^ d4).rotate_left(20);
+        let b7 = (a[10] ^ d0).rotate_left(3);
+        let b8 = (a[16] ^ d1).rotate_left(45);
+        let b9 = (a[22] ^ d2).rotate_left(61);
+        let b10 = (a[1] ^ d1).rotate_left(1);
+        let b11 = (a[7] ^ d2).rotate_left(6);
+        let b12 = (a[13] ^ d3).rotate_left(25);
+        let b13 = (a[19] ^ d4).rotate_left(8);
+        let b14 = (a[20] ^ d0).rotate_left(18);
+        let b15 = (a[4] ^ d4).rotate_left(27);
+        let b16 = (a[5] ^ d0).rotate_left(36);
+        let b17 = (a[11] ^ d1).rotate_left(10);
+        let b18 = (a[17] ^ d2).rotate_left(15);
+        let b19 = (a[23] ^ d3).rotate_left(56);
+        let b20 = (a[2] ^ d2).rotate_left(62);
+        let b21 = (a[8] ^ d3).rotate_left(55);
+        let b22 = (a[14] ^ d4).rotate_left(39);
+        let b23 = (a[15] ^ d0).rotate_left(41);
+        let b24 = (a[21] ^ d1).rotate_left(2);
+        a[0] = b0 ^ (!b1 & b2);
+        a[1] = b1 ^ (!b2 & b3);
+        a[2] = b2 ^ (!b3 & b4);
+        a[3] = b3 ^ (!b4 & b0);
+        a[4] = b4 ^ (!b0 & b1);
+        a[5] = b5 ^ (!b6 & b7);
+        a[6] = b6 ^ (!b7 & b8);
+        a[7] = b7 ^ (!b8 & b9);
+        a[8] = b8 ^ (!b9 & b5);
+        a[9] = b9 ^ (!b5 & b6);
+        a[10] = b10 ^ (!b11 & b12);
+        a[11] = b11 ^ (!b12 & b13);
+        a[12] = b12 ^ (!b13 & b14);
+        a[13] = b13 ^ (!b14 & b10);
+        a[14] = b14 ^ (!b10 & b11);
+        a[15] = b15 ^ (!b16 & b17);
+        a[16] = b16 ^ (!b17 & b18);
+        a[17] = b17 ^ (!b18 & b19);
+        a[18] = b18 ^ (!b19 & b15);
+        a[19] = b19 ^ (!b15 & b16);
+        a[20] = b20 ^ (!b21 & b22);
+        a[21] = b21 ^ (!b22 & b23);
+        a[22] = b22 ^ (!b23 & b24);
+        a[23] = b23 ^ (!b24 & b20);
+        a[24] = b24 ^ (!b20 & b21);
+        a[0] ^= rc;
     }
 }
 
-fn absorb_byte(state: &mut [u64; 25], offset: usize, byte: u8) {
-    let lane = offset / 8;
-    let shift = 8 * (offset % 8);
-    state[lane] ^= (byte as u64) << shift;
+fn absorb_block(state: &mut [u64; 25], block: &[u8]) {
+    for (lane, bytes) in state.iter_mut().zip(block.chunks_exact(8)) {
+        let mut word = [0u8; 8];
+        word.copy_from_slice(bytes);
+        *lane ^= u64::from_le_bytes(word);
+    }
 }
 
-fn squeeze_byte(state: &[u64; 25], offset: usize) -> u8 {
-    let lane = offset / 8;
-    let shift = 8 * (offset % 8);
-    (state[lane] >> shift) as u8
+fn squeeze_block(state: &[u64; 25], out: &mut [u8]) {
+    for (bytes, lane) in out.chunks_mut(8).zip(state.iter()) {
+        let word = lane.to_le_bytes();
+        bytes.copy_from_slice(&word[..bytes.len()]);
+    }
 }
 
 fn sponge(rate: usize, domain: u8, input: &[u8], output: &mut [u8]) {
     let mut state = [0u64; 25];
 
-    let mut offset = 0;
-    for &byte in input {
-        absorb_byte(&mut state, offset, byte);
-        offset += 1;
-        if offset == rate {
-            qudros_f1600(&mut state);
-            offset = 0;
-        }
+    let mut blocks = input.chunks_exact(rate);
+    for block in &mut blocks {
+        absorb_block(&mut state, block);
+        qudros_f1600(&mut state);
     }
 
-    absorb_byte(&mut state, offset, domain);
-    absorb_byte(&mut state, rate - 1, 128);
+    let tail = blocks.remainder();
+    let mut last = [0u8; 200];
+    last[..tail.len()].copy_from_slice(tail);
+    last[tail.len()] ^= domain;
+    last[rate - 1] ^= 128;
+    absorb_block(&mut state, &last[..rate]);
+    last.zeroize();
     qudros_f1600(&mut state);
 
-    let mut produced = 0;
-    let mut pos = 0;
-    while produced < output.len() {
-        if pos == rate {
-            qudros_f1600(&mut state);
-            pos = 0;
-        }
-        output[produced] = squeeze_byte(&state, pos);
-        produced += 1;
-        pos += 1;
+    let mut chunks = output.chunks_mut(rate);
+    if let Some(first) = chunks.next() {
+        squeeze_block(&state, first);
     }
-
+    for chunk in chunks {
+        qudros_f1600(&mut state);
+        squeeze_block(&state, chunk);
+    }
     state[..].zeroize();
 }
 
