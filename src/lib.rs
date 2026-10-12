@@ -9,7 +9,10 @@
 
 pub mod chacha20poly1305;
 pub mod ml_dsa;
+pub mod ml_dsa_87;
 pub mod ml_kem;
+pub mod ml_kem_1024;
+pub mod sha2;
 pub mod sha3;
 pub mod slh_dsa;
 
