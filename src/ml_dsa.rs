@@ -1,7 +1,7 @@
 // Copyright 2026 Quantova Inc
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-use crate::sha3::{shake128, shake256};
+use crate::sha3::{shake256, Shake128Stream};
 use crate::zeroize::{SecretPolys, Zeroize, Zeroizing};
 
 const Q: i32 = 8380417;
@@ -120,6 +120,49 @@ const ZETAS: [i32; N] = {
     z
 };
 
+const QINV: i32 = 58728449;
+const MONT: i64 = (1i64 << 32) % Q as i64;
+const MONT2: i64 = MONT * MONT % Q as i64;
+
+const ZETAS_MONT: [i32; N] = {
+    let mut z = [0i32; N];
+    let mut i = 0;
+    while i < N {
+        z[i] = ((ZETAS[i] as i64 * MONT) % Q as i64) as i32;
+        i += 1;
+    }
+    z
+};
+
+const INV_ZETAS_MONT: [i32; N] = {
+    let mut z = [0i32; N];
+    let mut i = 0;
+    while i < N {
+        z[i] = (((Q - ZETAS[i]) as i64 * MONT) % Q as i64) as i32;
+        i += 1;
+    }
+    z
+};
+
+const F_MONT: i32 = ((8347681i64 * MONT) % Q as i64) as i32;
+
+#[inline(always)]
+fn mont_reduce(a: i64) -> i32 {
+    let t = (a as i32).wrapping_mul(QINV);
+    ((a - t as i64 * Q as i64) >> 32) as i32
+}
+
+#[inline(always)]
+fn reduce32(a: i32) -> i32 {
+    let t = (a + (1 << 22)) >> 23;
+    a - t * Q
+}
+
+#[inline(always)]
+fn caddq(a: i32) -> i32 {
+    a + ((a >> 31) & Q)
+}
+
 fn ntt(a: &mut Poly) {
     let mut k = 0usize;
     let mut len = 128usize;
@@ -127,43 +170,42 @@ fn ntt(a: &mut Poly) {
         let mut start = 0usize;
         while start < N {
             k += 1;
-            let zeta = ZETAS[k];
-            let mut j = start;
-            while j < start + len {
-                let t = mul_q(zeta, a[j + len]);
-                a[j + len] = sub_q(a[j], t);
-                a[j] = add_q(a[j], t);
-                j += 1;
+            let zeta = ZETAS_MONT[k] as i64;
+            let (lo, hi) = a[start..start + 2 * len].split_at_mut(len);
+            for (x, y) in lo.iter_mut().zip(hi.iter_mut()) {
+                let t = mont_reduce(zeta * *y as i64);
+                *y = *x - t;
+                *x += t;
             }
             start += 2 * len;
         }
         len >>= 1;
     }
+    for x in a.iter_mut() {
+        *x = caddq(reduce32(*x));
+    }
 }
 
 fn inv_ntt(a: &mut Poly) {
-    const F: i32 = 8347681;
     let mut k = N;
     let mut len = 1usize;
     while len < N {
         let mut start = 0usize;
         while start < N {
             k -= 1;
-            let zeta = Q - ZETAS[k];
-            let mut j = start;
-            while j < start + len {
-                let t = a[j];
-                a[j] = add_q(t, a[j + len]);
-                a[j + len] = sub_q(t, a[j + len]);
-                a[j + len] = mul_q(zeta, a[j + len]);
-                j += 1;
+            let zeta = INV_ZETAS_MONT[k] as i64;
+            let (lo, hi) = a[start..start + 2 * len].split_at_mut(len);
+            for (x, y) in lo.iter_mut().zip(hi.iter_mut()) {
+                let t = *x;
+                *x = t + *y;
+                *y = mont_reduce(zeta * (t - *y) as i64);
             }
             start += 2 * len;
         }
         len <<= 1;
     }
     for x in a.iter_mut() {
-        *x = mul_q(F, *x);
+        *x = caddq(mont_reduce(F_MONT as i64 * *x as i64));
     }
 }
 
@@ -260,18 +302,38 @@ fn unpack_bits(data: &[u8], bits: usize) -> Poly {
 
 fn rej_ntt_poly(seed: &[u8]) -> Poly {
     let mut a = ZERO_POLY;
+    let mut stream = Shake128Stream::new(seed);
+    let mut block = [0u8; SHAKE128_RATE];
+    let mut ctr = 0usize;
+    while ctr < N {
+        stream.next_block(&mut block);
+        for chunk in block.chunks_exact(3) {
+            let z = chunk[0] as i32 | (chunk[1] as i32) << 8 | ((chunk[2] & 127) as i32) << 16;
+            if z < Q {
+                a[ctr] = z;
+                ctr += 1;
+                if ctr == N {
+                    break;
+                }
+            }
+        }
+    }
+    a
+}
+
+#[cfg(test)]
+fn rej_ntt_poly_reference(seed: &[u8]) -> Poly {
+    let mut a = ZERO_POLY;
     let mut buflen = SHAKE128_RATE * 6;
     loop {
         let mut buf = vec![0u8; buflen];
-        shake128(seed, &mut buf);
+        crate::sha3::shake128(seed, &mut buf);
         let mut ctr = 0usize;
         let mut pos = 0usize;
         while ctr < N && pos + 3 <= buf.len() {
-            let b0 = buf[pos] as i32;
-            let b1 = buf[pos + 1] as i32;
-            let b2 = (buf[pos + 2] & 127) as i32;
+            let z =
+                buf[pos] as i32 | (buf[pos + 1] as i32) << 8 | ((buf[pos + 2] & 127) as i32) << 16;
             pos += 3;
-            let z = b0 | (b1 << 8) | (b2 << 16);
             if z < Q {
                 a[ctr] = z;
                 ctr += 1;
@@ -423,7 +485,11 @@ fn sample_in_ball(c_tilde: &[u8]) -> Poly {
 }
 
 fn sample_in_ball_extended(c_tilde: &[u8]) -> Poly {
-    let mut buflen = SHAKE256_RATE * 4;
+    sample_in_ball_public(c_tilde, SHAKE256_RATE * 4)
+}
+
+fn sample_in_ball_public(c_tilde: &[u8], start: usize) -> Poly {
+    let mut buflen = start;
     loop {
         let buf = shake256_bytes(c_tilde, buflen);
         let mut c = ZERO_POLY;
@@ -944,44 +1010,53 @@ fn verify_with_mu(pk: &PublicKey, mu: &[u8], sig: &Signature) -> bool {
         return false;
     }
 
-    let a = expand_a(&rho);
-    let c = sample_in_ball(&decoded.c_tilde);
+    let c = sample_in_ball_public(&decoded.c_tilde, SHAKE256_RATE * 2);
     let mut c_hat = c;
     for coeff in c_hat.iter_mut() {
         *coeff = to_pos(*coeff);
     }
     ntt(&mut c_hat);
+    for coeff in c_hat.iter_mut() {
+        *coeff = mont_reduce(*coeff as i64 * MONT2);
+    }
 
-    let mut z_hat = decoded.z.clone();
+    let mut z_hat = decoded.z;
     for poly in z_hat.iter_mut() {
         for c in poly.iter_mut() {
             *c = to_pos(*c);
         }
         ntt(poly);
-    }
-
-    let mut t1_hat = t1.clone();
-    for poly in t1_hat.iter_mut() {
         for c in poly.iter_mut() {
-            *c = *c << D;
+            *c = mont_reduce(*c as i64 * MONT2);
         }
-        ntt(poly);
     }
 
+    let mut seed = [0u8; 34];
+    seed[..32].copy_from_slice(&rho);
     let mut w1 = vec![ZERO_POLY; K];
-    for i in 0..K {
-        let mut acc = ZERO_POLY;
-        for j in 0..L {
-            pointwise_acc(&mut acc, &a[i][j], &z_hat[j]);
+    for (i, t1_poly) in t1.iter().enumerate() {
+        let mut acc = [0i64; N];
+        for (j, z_poly) in z_hat.iter().enumerate() {
+            seed[32] = j as u8;
+            seed[33] = i as u8;
+            let a_ij = rej_ntt_poly(&seed);
+            for n in 0..N {
+                acc[n] += mont_reduce(a_ij[n] as i64 * z_poly[n] as i64) as i64;
+            }
         }
-        let mut ct1 = ZERO_POLY;
-        pointwise_acc(&mut ct1, &c_hat, &t1_hat[i]);
-        for n in 0..N {
-            acc[n] = sub_q(acc[n], ct1[n]);
+        let mut t1_hat = *t1_poly;
+        for c in t1_hat.iter_mut() {
+            *c <<= D;
         }
-        inv_ntt(&mut acc);
+        ntt(&mut t1_hat);
+        let mut w = ZERO_POLY;
         for n in 0..N {
-            w1[i][n] = use_hint(decoded.h[i][n] as u8, acc[n]);
+            let ct1 = mont_reduce(c_hat[n] as i64 * t1_hat[n] as i64) as i64;
+            w[n] = caddq(reduce32((acc[n] - ct1) as i32));
+        }
+        inv_ntt(&mut w);
+        for n in 0..N {
+            w1[i][n] = use_hint(decoded.h[i][n] as u8, w[n]);
         }
     }
 
@@ -1045,6 +1120,113 @@ pub fn verify(pk: &PublicKey, message: &[u8], signature: &Signature, context: &[
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn ntt_reference(a: &mut Poly) {
+        let mut k = 0usize;
+        let mut len = 128usize;
+        while len >= 1 {
+            let mut start = 0usize;
+            while start < N {
+                k += 1;
+                let zeta = ZETAS[k];
+                let mut j = start;
+                while j < start + len {
+                    let t = mul_q(zeta, a[j + len]);
+                    a[j + len] = sub_q(a[j], t);
+                    a[j] = add_q(a[j], t);
+                    j += 1;
+                }
+                start += 2 * len;
+            }
+            len >>= 1;
+        }
+    }
+
+    fn inv_ntt_reference(a: &mut Poly) {
+        const F: i32 = 8347681;
+        let mut k = N;
+        let mut len = 1usize;
+        while len < N {
+            let mut start = 0usize;
+            while start < N {
+                k -= 1;
+                let zeta = Q - ZETAS[k];
+                let mut j = start;
+                while j < start + len {
+                    let t = a[j];
+                    a[j] = add_q(t, a[j + len]);
+                    a[j + len] = sub_q(t, a[j + len]);
+                    a[j + len] = mul_q(zeta, a[j + len]);
+                    j += 1;
+                }
+                start += 2 * len;
+            }
+            len <<= 1;
+        }
+        for x in a.iter_mut() {
+            *x = mul_q(F, *x);
+        }
+    }
+
+    #[test]
+    fn montgomery_transforms_match_reference() {
+        let mut x = 0x9e37_79b9_7f4a_7c15u64;
+        for round in 0..3000 {
+            let mut a = ZERO_POLY;
+            for c in a.iter_mut() {
+                x ^= x << 13;
+                x ^= x >> 7;
+                x ^= x << 17;
+                *c = match round % 4 {
+                    0 => 0,
+                    1 => Q - 1,
+                    _ => (x % Q as u64) as i32,
+                };
+                if round % 4 == 0 && x & 1 == 1 {
+                    *c = Q - 1;
+                }
+            }
+            let mut f = a;
+            let mut r = a;
+            ntt(&mut f);
+            ntt_reference(&mut r);
+            assert_eq!(f, r);
+            let mut fi = a;
+            let mut ri = a;
+            inv_ntt(&mut fi);
+            inv_ntt_reference(&mut ri);
+            assert_eq!(fi, ri);
+        }
+    }
+
+    #[test]
+    fn public_sample_in_ball_matches_constant_time() {
+        let mut seed = [0u8; CTILDE_BYTES];
+        for i in 0..4000u32 {
+            let mut x = i.wrapping_mul(2654435761);
+            for b in seed.iter_mut() {
+                x ^= x << 13;
+                x ^= x >> 17;
+                x ^= x << 5;
+                *b = x as u8;
+            }
+            assert_eq!(
+                sample_in_ball(&seed),
+                sample_in_ball_public(&seed, SHAKE256_RATE * 2)
+            );
+        }
+    }
+
+    #[test]
+    fn streamed_rejection_sampling_matches_reference() {
+        let mut seed = [0u8; 34];
+        for i in 0..512u32 {
+            seed[..4].copy_from_slice(&i.to_le_bytes());
+            seed[32] = (i % 5) as u8;
+            seed[33] = (i % 6) as u8;
+            assert_eq!(rej_ntt_poly(&seed), rej_ntt_poly_reference(&seed));
+        }
+    }
     use std::fs;
     use std::path::PathBuf;
 

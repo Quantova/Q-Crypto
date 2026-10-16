@@ -160,6 +160,40 @@ pub fn shake256(input: &[u8], output: &mut [u8]) {
     sponge(136, 31, input, output);
 }
 
+pub(crate) struct Shake128Stream {
+    state: [u64; 25],
+}
+
+impl Shake128Stream {
+    pub(crate) fn new(input: &[u8]) -> Self {
+        let mut state = [0u64; 25];
+        let mut blocks = input.chunks_exact(168);
+        for block in &mut blocks {
+            absorb_block(&mut state, block);
+            qudros_f1600(&mut state);
+        }
+        let tail = blocks.remainder();
+        let mut last = [0u8; 168];
+        last[..tail.len()].copy_from_slice(tail);
+        last[tail.len()] ^= 31;
+        last[167] ^= 128;
+        absorb_block(&mut state, &last);
+        qudros_f1600(&mut state);
+        Shake128Stream { state }
+    }
+
+    pub(crate) fn next_block(&mut self, out: &mut [u8; 168]) {
+        squeeze_block(&self.state, out);
+        qudros_f1600(&mut self.state);
+    }
+}
+
+impl Drop for Shake128Stream {
+    fn drop(&mut self) {
+        self.state[..].zeroize();
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -216,6 +250,21 @@ mod tests {
                  10e116e9192af3c91a7ec57647e3934057340b4cf408d5a56592f8274eec53f0"
             )[..]
         );
+    }
+
+    #[test]
+    fn shake128_stream_matches_one_shot() {
+        for len in [0usize, 1, 34, 167, 168, 169, 336, 500] {
+            let input: Vec<u8> = (0..len).map(|i| (i * 7 + 3) as u8).collect();
+            let mut one_shot = [0u8; 168 * 7];
+            shake128(&input, &mut one_shot);
+            let mut stream = Shake128Stream::new(&input);
+            let mut block = [0u8; 168];
+            for chunk in one_shot.chunks(168) {
+                stream.next_block(&mut block);
+                assert_eq!(&block[..], chunk);
+            }
+        }
     }
 
     #[test]
