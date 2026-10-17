@@ -7,39 +7,42 @@ pub(crate) trait Zeroize {
     fn zeroize(&mut self);
 }
 
+fn volatile_zero<T: Copy + Default>(slots: &mut [T]) {
+    let zero = T::default();
+    for slot in slots.iter_mut() {
+        unsafe { core::ptr::write_volatile(slot, zero) }
+    }
+}
+
+fn wide_zero<T: Copy + Default>(slots: &mut [T]) {
+    let (head, body, tail) = unsafe { slots.align_to_mut::<u128>() };
+    volatile_zero(head);
+    volatile_zero(body);
+    volatile_zero(tail);
+    compiler_fence(Ordering::SeqCst);
+}
+
 impl Zeroize for [u8] {
     fn zeroize(&mut self) {
-        for slot in self.iter_mut() {
-            unsafe { core::ptr::write_volatile(slot, 0) }
-        }
-        compiler_fence(Ordering::SeqCst);
+        wide_zero(self);
     }
 }
 
 impl Zeroize for [i32] {
     fn zeroize(&mut self) {
-        for slot in self.iter_mut() {
-            unsafe { core::ptr::write_volatile(slot, 0) }
-        }
-        compiler_fence(Ordering::SeqCst);
+        wide_zero(self);
     }
 }
 
 impl Zeroize for [u32] {
     fn zeroize(&mut self) {
-        for slot in self.iter_mut() {
-            unsafe { core::ptr::write_volatile(slot, 0) }
-        }
-        compiler_fence(Ordering::SeqCst);
+        wide_zero(self);
     }
 }
 
 impl Zeroize for [u64] {
     fn zeroize(&mut self) {
-        for slot in self.iter_mut() {
-            unsafe { core::ptr::write_volatile(slot, 0) }
-        }
-        compiler_fence(Ordering::SeqCst);
+        wide_zero(self);
     }
 }
 
@@ -106,6 +109,84 @@ impl<T: AsMut<[u8]>> core::ops::Deref for Zeroizing<T> {
 impl<T: AsMut<[u8]>> core::fmt::Debug for Zeroizing<T> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.write_str("Zeroizing(redacted)")
+    }
+}
+
+pub struct SecretBytes<const N: usize> {
+    bytes: Box<[u8; N]>,
+}
+
+impl<const N: usize> SecretBytes<N> {
+    pub fn zeroed() -> Self {
+        SecretBytes {
+            bytes: Box::new([0u8; N]),
+        }
+    }
+
+    pub fn from_bytes(bytes: &[u8; N]) -> Self {
+        let mut out = Self::zeroed();
+        out.bytes.copy_from_slice(bytes);
+        out
+    }
+
+    pub fn from_slice(bytes: &[u8]) -> Option<Self> {
+        if bytes.len() != N {
+            return None;
+        }
+        let mut out = Self::zeroed();
+        out.bytes.copy_from_slice(bytes);
+        Some(out)
+    }
+
+    pub fn as_bytes(&self) -> &[u8; N] {
+        &self.bytes
+    }
+
+    pub fn as_mut_bytes(&mut self) -> &mut [u8; N] {
+        &mut self.bytes
+    }
+}
+
+impl<const N: usize> Drop for SecretBytes<N> {
+    fn drop(&mut self) {
+        self.bytes[..].zeroize();
+    }
+}
+
+impl<const N: usize> core::ops::Deref for SecretBytes<N> {
+    type Target = [u8; N];
+    fn deref(&self) -> &[u8; N] {
+        &self.bytes
+    }
+}
+
+impl<const N: usize> core::ops::DerefMut for SecretBytes<N> {
+    fn deref_mut(&mut self) -> &mut [u8; N] {
+        &mut self.bytes
+    }
+}
+
+impl<const N: usize> AsRef<[u8]> for SecretBytes<N> {
+    fn as_ref(&self) -> &[u8] {
+        &self.bytes[..]
+    }
+}
+
+impl<const N: usize> PartialEq for SecretBytes<N> {
+    fn eq(&self, other: &Self) -> bool {
+        let mut diff = 0u8;
+        for (a, b) in self.bytes.iter().zip(other.bytes.iter()) {
+            diff |= a ^ b;
+        }
+        core::hint::black_box(diff) == 0
+    }
+}
+
+impl<const N: usize> Eq for SecretBytes<N> {}
+
+impl<const N: usize> core::fmt::Debug for SecretBytes<N> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str("SecretBytes(redacted)")
     }
 }
 

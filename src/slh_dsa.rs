@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
 use crate::sha3::shake256;
-use crate::zeroize::Zeroize;
+use crate::zeroize::{SecretBytes, Zeroize};
 
 const N: usize = 24;
 const H: usize = 63;
@@ -27,6 +27,8 @@ const FORS_SIG_BYTES: usize = K * (1 + A) * N;
 pub const PUBLIC_KEY_BYTES: usize = 2 * N;
 pub const SECRET_KEY_BYTES: usize = 4 * N;
 pub const SIGNATURE_BYTES: usize = N + FORS_SIG_BYTES + D * XMSS_SIG_BYTES;
+
+pub type SecretKey = SecretBytes<SECRET_KEY_BYTES>;
 
 const WOTS_HASH: u32 = 0;
 const WOTS_PK: u32 = 1;
@@ -448,7 +450,7 @@ pub fn keygen(
     sk_seed: &[u8; N],
     sk_prf: &[u8; N],
     pk_seed: &[u8; N],
-) -> ([u8; SECRET_KEY_BYTES], [u8; PUBLIC_KEY_BYTES]) {
+) -> (SecretKey, [u8; PUBLIC_KEY_BYTES]) {
     let mut adrs = Adrs::new();
     adrs.set_layer((D - 1) as u32);
     let pk_root = xmss_node(sk_seed, 0, HP as u32, pk_seed, &mut adrs);
@@ -457,7 +459,7 @@ pub fn keygen(
     pk[..N].copy_from_slice(pk_seed);
     pk[N..].copy_from_slice(&pk_root);
 
-    let mut sk = [0u8; SECRET_KEY_BYTES];
+    let mut sk = SecretKey::zeroed();
     sk[..N].copy_from_slice(sk_seed);
     sk[N..2 * N].copy_from_slice(sk_prf);
     sk[2 * N..3 * N].copy_from_slice(pk_seed);
@@ -566,7 +568,7 @@ pub fn sign(
 }
 
 #[cfg(feature = "os-rng")]
-pub fn keygen_os() -> Option<([u8; SECRET_KEY_BYTES], [u8; PUBLIC_KEY_BYTES])> {
+pub fn keygen_os() -> Option<(SecretKey, [u8; PUBLIC_KEY_BYTES])> {
     let mut sk_seed = [0u8; N];
     let mut sk_prf = [0u8; N];
     let mut pk_seed = [0u8; N];
@@ -625,10 +627,8 @@ mod tests {
         a
     }
 
-    fn secret(v: &[u8]) -> [u8; SECRET_KEY_BYTES] {
-        let mut a = [0u8; SECRET_KEY_BYTES];
-        a.copy_from_slice(v);
-        a
+    fn secret(v: &[u8]) -> SecretKey {
+        SecretKey::from_slice(v).expect("a secret key record has the fixed length")
     }
 
     fn public(v: &[u8]) -> [u8; PUBLIC_KEY_BYTES] {

@@ -15,6 +15,8 @@ pub mod slh_dsa;
 
 mod zeroize;
 
+pub use zeroize::SecretBytes;
+
 #[cfg(feature = "os-rng")]
 pub mod rng;
 
