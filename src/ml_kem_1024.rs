@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
 use crate::sha3::{sha3_256, sha3_512, shake128, shake256};
-use crate::zeroize::{Zeroize, Zeroizing};
+use crate::zeroize::{SecretBytes, Zeroize, Zeroizing};
 
 const Q: i32 = 3329;
 const N: usize = 256;
@@ -21,9 +21,9 @@ pub const SHARED_SECRET_BYTES: usize = 32;
 pub const SEED_BYTES: usize = 32;
 
 pub type EncapsKey = [u8; ENCAPS_KEY_BYTES];
-pub type DecapsKey = [u8; DECAPS_KEY_BYTES];
+pub type DecapsKey = SecretBytes<DECAPS_KEY_BYTES>;
 pub type Ciphertext = [u8; CIPHERTEXT_BYTES];
-pub type SharedSecret = [u8; SHARED_SECRET_BYTES];
+pub type SharedSecret = SecretBytes<SHARED_SECRET_BYTES>;
 
 type Poly = [i32; N];
 
@@ -427,11 +427,13 @@ fn kpke_encrypt(ek: &[u8], m: &[u8], r: &[u8]) -> Vec<u8> {
     }
     pack_bits(&comp, DV, &mut c);
 
-    for poly in y.iter_mut().chain(e1.iter_mut()) {
+    for poly in y.iter_mut().chain(e1.iter_mut()).chain(u.iter_mut()) {
         poly[..].zeroize();
     }
     e2[..].zeroize();
     mu[..].zeroize();
+    v[..].zeroize();
+    comp[..].zeroize();
     c
 }
 
@@ -501,9 +503,9 @@ pub fn keygen(d: &[u8; SEED_BYTES], z: &[u8; SEED_BYTES]) -> (EncapsKey, DecapsK
     dk.extend_from_slice(z);
     let dk = Zeroizing::new(dk);
 
-    let mut dk_arr = [0u8; DECAPS_KEY_BYTES];
-    dk_arr.copy_from_slice(&dk);
-    (ek, dk_arr)
+    let mut dk_out = DecapsKey::zeroed();
+    dk_out.as_mut_bytes().copy_from_slice(&dk);
+    (ek, dk_out)
 }
 
 pub fn encaps(ek: &EncapsKey, m: &[u8; SEED_BYTES]) -> Option<(SharedSecret, Ciphertext)> {
@@ -519,8 +521,8 @@ pub fn encaps(ek: &EncapsKey, m: &[u8; SEED_BYTES]) -> Option<(SharedSecret, Cip
     let g_in = Zeroizing::new(g_in);
     let g = Zeroizing::new(sha3_512(&g_in));
 
-    let mut shared = [0u8; SHARED_SECRET_BYTES];
-    shared.copy_from_slice(&g[..32]);
+    let mut shared = SharedSecret::zeroed();
+    shared.as_mut_bytes().copy_from_slice(&g[..32]);
 
     let c = kpke_encrypt(ek, m, &g[32..]);
     let mut ct = [0u8; CIPHERTEXT_BYTES];
@@ -528,7 +530,7 @@ pub fn encaps(ek: &EncapsKey, m: &[u8; SEED_BYTES]) -> Option<(SharedSecret, Cip
     Some((shared, ct))
 }
 
-pub fn decaps(dk: &DecapsKey, c: &Ciphertext) -> SharedSecret {
+pub fn decaps(dk: &[u8; DECAPS_KEY_BYTES], c: &Ciphertext) -> SharedSecret {
     let dk_pke = &dk[..K * POLY_BYTES];
     let ek_pke = &dk[K * POLY_BYTES..2 * K * POLY_BYTES + 32];
     let h = &dk[2 * K * POLY_BYTES + 32..2 * K * POLY_BYTES + 64];
@@ -564,9 +566,10 @@ pub fn decaps(dk: &DecapsKey, c: &Ciphertext) -> SharedSecret {
     let h_check = sha3_256(ek_pke);
     let keep = ct_eq(&c_prime, c) & canonical_mask & ct_eq(&h_check, h);
 
-    let mut shared = [0u8; SHARED_SECRET_BYTES];
+    let mut shared = SharedSecret::zeroed();
+    let out = shared.as_mut_bytes();
     for i in 0..SHARED_SECRET_BYTES {
-        shared[i] = (keep & k_prime[i]) | (!keep & k_bar[i]);
+        out[i] = (keep & k_prime[i]) | (!keep & k_bar[i]);
     }
     c_prime[..].zeroize();
     k_prime[..].zeroize();
@@ -826,8 +829,8 @@ mod tests {
         c_arr.copy_from_slice(&c_forge);
 
         assert_ne!(
-            decaps(&dk_bad, &c_arr),
-            k_forge,
+            &decaps(&dk_bad, &c_arr)[..],
+            &k_forge[..],
             "a dk whose stored hash does not match its embedded ek must implicitly reject"
         );
     }

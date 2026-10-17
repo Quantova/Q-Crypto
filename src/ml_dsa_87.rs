@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
 use crate::sha3::{shake128, shake256};
-use crate::zeroize::{SecretPolys, Zeroize, Zeroizing};
+use crate::zeroize::{SecretBytes, SecretPolys, Zeroize, Zeroizing};
 
 const Q: i32 = 8380417;
 const N: usize = 256;
@@ -30,7 +30,7 @@ pub const SIGNATURE_BYTES: usize = CTILDE_BYTES + L * POLYZ_PACKED + OMEGA + K;
 pub const SEED_BYTES: usize = 32;
 
 pub type PublicKey = [u8; PUBLIC_KEY_BYTES];
-pub type SecretKey = [u8; SECRET_KEY_BYTES];
+pub type SecretKey = SecretBytes<SECRET_KEY_BYTES>;
 pub type Signature = [u8; SIGNATURE_BYTES];
 
 type Poly = [i32; N];
@@ -492,7 +492,7 @@ fn sk_encode_into(
     s1: &[Poly],
     s2: &[Poly],
     t0: &[Poly],
-    sk: &mut SecretKey,
+    sk: &mut [u8; SECRET_KEY_BYTES],
 ) {
     let mut out = Vec::with_capacity(SECRET_KEY_BYTES);
     out.extend_from_slice(rho);
@@ -550,7 +550,7 @@ impl core::fmt::Debug for SecretComponents {
     }
 }
 
-fn sk_decode(sk: &SecretKey) -> Option<SecretComponents> {
+fn sk_decode(sk: &[u8; SECRET_KEY_BYTES]) -> Option<SecretComponents> {
     let mut rho = [0u8; 32];
     rho.copy_from_slice(&sk[..32]);
     let mut key = [0u8; 32];
@@ -696,7 +696,7 @@ fn hint_weight(h: &[Poly]) -> usize {
 }
 
 pub fn keygen(seed: &[u8; SEED_BYTES]) -> (PublicKey, SecretKey) {
-    let mut sk = [0u8; SECRET_KEY_BYTES];
+    let mut sk = SecretKey::zeroed();
     let pk = keygen_into(seed, &mut sk);
     (pk, sk)
 }
@@ -707,14 +707,12 @@ pub fn sign_from_seed(
     context: &[u8],
     rnd: &[u8; 32],
 ) -> Option<Signature> {
-    let mut sk = [0u8; SECRET_KEY_BYTES];
+    let mut sk = SecretKey::zeroed();
     let _pk = keygen_into(seed, &mut sk);
-    let signature = sign(&sk, message, context, rnd);
-    sk[..].zeroize();
-    signature
+    sign(&sk, message, context, rnd)
 }
 
-pub fn keygen_into(seed: &[u8; SEED_BYTES], sk: &mut SecretKey) -> PublicKey {
+pub fn keygen_into(seed: &[u8; SEED_BYTES], sk: &mut [u8; SECRET_KEY_BYTES]) -> PublicKey {
     let mut h_in = Vec::with_capacity(34);
     h_in.extend_from_slice(seed);
     h_in.push(K as u8);
@@ -766,7 +764,7 @@ pub fn keygen_into(seed: &[u8; SEED_BYTES], sk: &mut SecretKey) -> PublicKey {
     pk
 }
 
-fn sign_with_mu(sk: &SecretKey, mu: &[u8], rnd: &[u8; 32]) -> Option<Signature> {
+fn sign_with_mu(sk: &[u8; SECRET_KEY_BYTES], mu: &[u8], rnd: &[u8; 32]) -> Option<Signature> {
     let sc = sk_decode(sk)?;
     let a = expand_a(&sc.rho);
 
@@ -825,7 +823,8 @@ fn sign_with_mu(sk: &SecretKey, mu: &[u8], rnd: &[u8; 32]) -> Option<Signature> 
 
         let mut ch_in = Vec::with_capacity(mu.len() + K * POLYW1_PACKED);
         ch_in.extend_from_slice(mu);
-        ch_in.extend_from_slice(&w1_encode(&w1));
+        ch_in.extend_from_slice(&Zeroizing::new(w1_encode(&w1)));
+        let ch_in = Zeroizing::new(ch_in);
         let c_tilde = shake256_bytes(&ch_in, CTILDE_BYTES);
         let c = sample_in_ball(&c_tilde);
         let mut c_hat = c;
@@ -867,7 +866,7 @@ fn sign_with_mu(sk: &SecretKey, mu: &[u8], rnd: &[u8; 32]) -> Option<Signature> 
             continue;
         }
 
-        let mut h = vec![ZERO_POLY; K];
+        let mut h = SecretPolys::new(vec![ZERO_POLY; K]);
         let mut ct0_norm = 0i32;
         for i in 0..K {
             let mut ct0 = ZERO_POLY;
@@ -898,7 +897,7 @@ fn compute_mu(tr: &[u8], m_prime: &[u8]) -> Vec<u8> {
 }
 
 #[cfg(any(test, feature = "acvp-internals"))]
-pub fn sign_internal(sk: &SecretKey, m_prime: &[u8], rnd: &[u8; 32]) -> Signature {
+pub fn sign_internal(sk: &[u8; SECRET_KEY_BYTES], m_prime: &[u8], rnd: &[u8; 32]) -> Signature {
     sign_internal_impl(sk, m_prime, rnd).expect("a key produced by keygen decodes")
 }
 
@@ -908,7 +907,7 @@ pub fn verify_internal(pk: &PublicKey, m_prime: &[u8], sig: &Signature) -> bool 
 }
 
 pub(crate) fn sign_internal_impl(
-    sk: &SecretKey,
+    sk: &[u8; SECRET_KEY_BYTES],
     m_prime: &[u8],
     rnd: &[u8; 32],
 ) -> Option<Signature> {
@@ -929,10 +928,6 @@ fn verify_with_mu(pk: &PublicKey, mu: &[u8], sig: &Signature) -> bool {
         None => return false,
     };
     let (rho, t1) = pk_decode(pk);
-
-    if t1.iter().all(|poly| poly.iter().all(|&c| c == 0)) {
-        return false;
-    }
 
     let mut z_norm = 0i32;
     for poly in decoded.z.iter() {
@@ -993,6 +988,10 @@ fn verify_with_mu(pk: &PublicKey, mu: &[u8], sig: &Signature) -> bool {
     c_tilde == decoded.c_tilde
 }
 
+pub fn public_key_is_degenerate(pk: &PublicKey) -> bool {
+    pk[32..].iter().all(|&b| b == 0)
+}
+
 fn format_message(context: &[u8], message: &[u8]) -> Option<Vec<u8>> {
     if context.len() > 255 {
         return None;
@@ -1005,7 +1004,12 @@ fn format_message(context: &[u8], message: &[u8]) -> Option<Vec<u8>> {
     Some(m)
 }
 
-pub fn sign(sk: &SecretKey, message: &[u8], context: &[u8], rnd: &[u8; 32]) -> Option<Signature> {
+pub fn sign(
+    sk: &[u8; SECRET_KEY_BYTES],
+    message: &[u8],
+    context: &[u8],
+    rnd: &[u8; 32],
+) -> Option<Signature> {
     let m_prime = format_message(context, message)?;
     sign_internal_impl(sk, &m_prime, rnd)
 }
@@ -1023,7 +1027,7 @@ pub fn keygen_os() -> Option<(PublicKey, SecretKey)> {
 }
 
 #[cfg(feature = "os-rng")]
-pub fn sign_os(sk: &SecretKey, message: &[u8], context: &[u8]) -> Option<Signature> {
+pub fn sign_os(sk: &[u8; SECRET_KEY_BYTES], message: &[u8], context: &[u8]) -> Option<Signature> {
     let mut rnd = [0u8; 32];
     if crate::rng::try_fill_random(&mut rnd).is_err() {
         rnd[..].zeroize();
@@ -1356,7 +1360,7 @@ mod tests {
     }
 
     pub(super) fn signature_carrying_a_hint(
-        sk: &SecretKey,
+        sk: &[u8; SECRET_KEY_BYTES],
         context: &[u8],
         rnd: &[u8; 32],
     ) -> (Vec<u8>, Signature) {
