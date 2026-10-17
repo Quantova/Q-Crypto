@@ -20,7 +20,9 @@ Each primitive is implemented in dependency order, and each one gates the next.
 - **SLH-DSA-SHAKE-192s** (FIPS 205, security category 3). Stateless hash based signatures, the conservative option whose security rests on the hash alone. The small parameter set, a 48 byte public key against a 16224 byte signature.
 - **ChaCha20-Poly1305** (RFC 8439). The single 256 bit symmetric AEAD the crypto policy permits, used by the transport. It stands alone and depends on nothing else in the crate.
 
-FN-DSA (FIPS 206) is present but feature flagged off behind `fn-dsa`, and it stays off until the standard is published in final form and the cryptographic transition track admits it.
+FN-DSA (FIPS 206) is not implemented. The `fn_dsa` module and the `fn-dsa` feature are empty placeholders until the standard is published in final form and the cryptographic transition track admits it.
+
+`seal` takes its nonce from the caller, who must never repeat a nonce under one key. The transport derives each nonce from a per session IV and the record sequence number, so a nonce never repeats. `seal_os` draws a random 96 bit nonce, so one key should seal at most 2^32 messages through it before the key is replaced.
 
 ## Build and test
 
@@ -38,7 +40,7 @@ Every other repository depends on this crate, pinned by git tag rather than a re
 
 ## Status
 
-At testnet. The stack pins the released `v0.3.0` tag. The crate is a reference implementation validated against NIST test vectors and has not been independently audited.
+Every consumer pins a reviewed commit, currently 12fefda, through its Cargo.lock and its cross repo pins. The crate is a reference implementation validated against NIST test vectors and has had no independent third party review.
 
 ## License
 

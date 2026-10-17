@@ -101,6 +101,7 @@ pub fn try_fill_random(buf: &mut [u8]) -> std::io::Result<()> {
     file.read_exact(buf)
 }
 
+#[deprecated(note = "panics when no entropy source is available, call try_fill_random")]
 pub fn fill_random(buf: &mut [u8]) {
     try_fill_random(buf).expect(
         "Q-Crypto: no OS entropy source (CSPRNG syscall and /dev/urandom both unavailable)",
@@ -115,8 +116,8 @@ mod tests {
     fn fill_random_is_not_constant_and_fills_the_buffer() {
         let mut a = [0u8; 48];
         let mut b = [0u8; 48];
-        fill_random(&mut a);
-        fill_random(&mut b);
+        try_fill_random(&mut a).unwrap();
+        try_fill_random(&mut b).unwrap();
         assert_ne!(a, b, "two OS draws must not be equal");
         assert!(a.iter().any(|&x| x != 0), "the buffer must be written");
     }
@@ -124,7 +125,7 @@ mod tests {
     #[test]
     fn fill_random_has_high_entropy_and_no_repeats() {
         let mut buf = [0u8; 4096];
-        fill_random(&mut buf);
+        try_fill_random(&mut buf).unwrap();
 
         let mut seen = [false; 256];
         for &byte in buf.iter() {
@@ -146,7 +147,7 @@ mod tests {
         let mut draws: Vec<[u8; 32]> = Vec::new();
         for _ in 0..16 {
             let mut d = [0u8; 32];
-            fill_random(&mut d);
+            try_fill_random(&mut d).unwrap();
             assert!(
                 !draws.contains(&d),
                 "independent CSPRNG draws must not collide"
