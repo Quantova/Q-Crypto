@@ -1,0 +1,1722 @@
+// Copyright 2026 Quantova Inc
+// SPDX-License-Identifier: Apache-2.0 OR MIT
+
+use crate::sha3::{shake128, shake256};
+use crate::zeroize::{SecretPolys, Zeroize, Zeroizing};
+
+const Q: i32 = 8380417;
+const N: usize = 256;
+const D: usize = 13;
+const K: usize = 8;
+const L: usize = 7;
+const ETA: i32 = 2;
+const TAU: usize = 60;
+const BETA: i32 = 120;
+const GAMMA1: i32 = 1 << 19;
+const GAMMA2: i32 = (Q - 1) / 32;
+const OMEGA: usize = 75;
+const LAMBDA: usize = 256;
+
+const CTILDE_BYTES: usize = LAMBDA / 4;
+const POLYT1_PACKED: usize = 320;
+const POLYT0_PACKED: usize = 416;
+const POLYETA_PACKED: usize = 96;
+const POLYZ_PACKED: usize = 640;
+const POLYW1_PACKED: usize = 128;
+
+pub const PUBLIC_KEY_BYTES: usize = 32 + K * POLYT1_PACKED;
+pub const SECRET_KEY_BYTES: usize = 128 + (L + K) * POLYETA_PACKED + K * POLYT0_PACKED;
+pub const SIGNATURE_BYTES: usize = CTILDE_BYTES + L * POLYZ_PACKED + OMEGA + K;
+pub const SEED_BYTES: usize = 32;
+
+pub type PublicKey = [u8; PUBLIC_KEY_BYTES];
+pub type SecretKey = [u8; SECRET_KEY_BYTES];
+pub type Signature = [u8; SIGNATURE_BYTES];
+
+type Poly = [i32; N];
+
+const ZERO_POLY: Poly = [0i32; N];
+
+const SHAKE128_RATE: usize = 168;
+const SHAKE256_RATE: usize = 136;
+
+fn add_q(a: i32, b: i32) -> i32 {
+    let r = a + b - Q;
+    r + ((r >> 31) & Q)
+}
+
+fn sub_q(a: i32, b: i32) -> i32 {
+    let r = a - b;
+    r + ((r >> 31) & Q)
+}
+
+const BARRETT_M: i128 = 16793614;
+const BARRETT_SHIFT: u32 = 47;
+
+fn mul_q(a: i32, b: i32) -> i32 {
+    let p = a as i64 * b as i64;
+    let q = Q as i64;
+    let est = ((p as i128 * BARRETT_M) >> BARRETT_SHIFT) as i64;
+    let mut r = p - est * q;
+    r -= q;
+    r += (r >> 63) & q;
+    r -= q;
+    r += (r >> 63) & q;
+    r as i32
+}
+
+fn to_pos(a: i32) -> i32 {
+    a + ((a >> 31) & Q)
+}
+
+fn center(a: i32) -> i32 {
+    let mask = ((Q - 1) / 2 - a) >> 31;
+    a - (mask & Q)
+}
+
+fn inf_norm(p: &Poly) -> i32 {
+    let mut max = 0i32;
+    for &c in p.iter() {
+        let x = center(c);
+        let sign = x >> 31;
+        let v = (x ^ sign) - sign;
+        let take = (max - v) >> 31;
+        max = (v & take) | (max & !take);
+    }
+    max
+}
+
+const fn brv8(mut i: usize) -> u32 {
+    let mut r = 0u32;
+    let mut b = 0;
+    while b < 8 {
+        r = (r << 1) | (i & 1) as u32;
+        i >>= 1;
+        b += 1;
+    }
+    r
+}
+
+const fn pow_mod(base: i64, mut exp: u32) -> i64 {
+    let mut result = 1i64;
+    let mut b = base % Q as i64;
+    while exp > 0 {
+        if exp & 1 == 1 {
+            result = (result * b) % Q as i64;
+        }
+        b = (b * b) % Q as i64;
+        exp >>= 1;
+    }
+    result
+}
+
+const ZETAS: [i32; N] = {
+    let mut z = [0i32; N];
+    let mut i = 0;
+    while i < N {
+        z[i] = pow_mod(1753, brv8(i)) as i32;
+        i += 1;
+    }
+    z
+};
+
+fn ntt(a: &mut Poly) {
+    let mut k = 0usize;
+    let mut len = 128usize;
+    while len >= 1 {
+        let mut start = 0usize;
+        while start < N {
+            k += 1;
+            let zeta = ZETAS[k];
+            let mut j = start;
+            while j < start + len {
+                let t = mul_q(zeta, a[j + len]);
+                a[j + len] = sub_q(a[j], t);
+                a[j] = add_q(a[j], t);
+                j += 1;
+            }
+            start += 2 * len;
+        }
+        len >>= 1;
+    }
+}
+
+fn inv_ntt(a: &mut Poly) {
+    const F: i32 = 8347681;
+    let mut k = N;
+    let mut len = 1usize;
+    while len < N {
+        let mut start = 0usize;
+        while start < N {
+            k -= 1;
+            let zeta = Q - ZETAS[k];
+            let mut j = start;
+            while j < start + len {
+                let t = a[j];
+                a[j] = add_q(t, a[j + len]);
+                a[j + len] = sub_q(t, a[j + len]);
+                a[j + len] = mul_q(zeta, a[j + len]);
+                j += 1;
+            }
+            start += 2 * len;
+        }
+        len <<= 1;
+    }
+    for x in a.iter_mut() {
+        *x = mul_q(F, *x);
+    }
+}
+
+fn pointwise_acc(acc: &mut Poly, a: &Poly, b: &Poly) {
+    for i in 0..N {
+        acc[i] = add_q(acc[i], mul_q(a[i], b[i]));
+    }
+}
+
+fn shake256_bytes(input: &[u8], outlen: usize) -> Vec<u8> {
+    let mut out = vec![0u8; outlen];
+    shake256(input, &mut out);
+    out
+}
+
+fn power2round(r: i32) -> (i32, i32) {
+    let mut r0 = r & ((1 << D) - 1);
+    let mask = ((1 << (D - 1)) - r0) >> 31;
+    r0 -= mask & (1 << D);
+    let r1 = (r - r0) >> D;
+    (r1, r0)
+}
+
+fn decompose(r: i32) -> (i32, i32) {
+    let q0 = (((r as i64) * 8396809) >> 42) as i32;
+    let mut r0 = r - q0 * (2 * GAMMA2);
+    let low_mask = (GAMMA2 - r0) >> 31;
+    r0 -= low_mask & (2 * GAMMA2);
+    let diff = (r - r0) - (Q - 1);
+    let is_boundary = !((diff | diff.wrapping_neg()) >> 31);
+    let r1 = (((r - r0) as i64 * 8396809) >> 42) as i32 & !is_boundary;
+    r0 -= is_boundary & 1;
+    (r1, r0)
+}
+
+fn high_bits(r: i32) -> i32 {
+    decompose(r).0
+}
+
+fn low_bits(r: i32) -> i32 {
+    decompose(r).1
+}
+
+fn make_hint(z: i32, r: i32) -> u8 {
+    let diff = high_bits(r) ^ high_bits(add_q(r, z));
+    (((diff | diff.wrapping_neg()) >> 31) & 1) as u8
+}
+
+fn use_hint(h: u8, r: i32) -> i32 {
+    let m = (Q - 1) / (2 * GAMMA2);
+    let (r1, r0) = decompose(r);
+    if h == 0 {
+        r1
+    } else if r0 > 0 {
+        (r1 + 1).rem_euclid(m)
+    } else {
+        (r1 - 1).rem_euclid(m)
+    }
+}
+
+fn pack_bits(coeffs: &Poly, bits: usize, out: &mut Vec<u8>) {
+    let mask: u64 = (1u64 << bits) - 1;
+    let mut acc: u64 = 0;
+    let mut acc_bits = 0usize;
+    for &c in coeffs.iter() {
+        acc |= (c as u64 & mask) << acc_bits;
+        acc_bits += bits;
+        while acc_bits >= 8 {
+            out.push((acc & 255) as u8);
+            acc >>= 8;
+            acc_bits -= 8;
+        }
+    }
+}
+
+fn unpack_bits(data: &[u8], bits: usize) -> Poly {
+    let mask: u64 = (1u64 << bits) - 1;
+    let mut coeffs = ZERO_POLY;
+    let mut acc: u64 = 0;
+    let mut acc_bits = 0usize;
+    let mut byte = 0usize;
+    for c in coeffs.iter_mut() {
+        while acc_bits < bits {
+            acc |= (data[byte] as u64) << acc_bits;
+            byte += 1;
+            acc_bits += 8;
+        }
+        *c = (acc & mask) as i32;
+        acc >>= bits;
+        acc_bits -= bits;
+    }
+    coeffs
+}
+
+fn rej_ntt_poly(seed: &[u8]) -> Poly {
+    let mut a = ZERO_POLY;
+    let mut buflen = SHAKE128_RATE * 6;
+    loop {
+        let mut buf = vec![0u8; buflen];
+        shake128(seed, &mut buf);
+        let mut ctr = 0usize;
+        let mut pos = 0usize;
+        while ctr < N && pos + 3 <= buf.len() {
+            let b0 = buf[pos] as i32;
+            let b1 = buf[pos + 1] as i32;
+            let b2 = (buf[pos + 2] & 127) as i32;
+            pos += 3;
+            let z = b0 | (b1 << 8) | (b2 << 16);
+            if z < Q {
+                a[ctr] = z;
+                ctr += 1;
+            }
+        }
+        if ctr == N {
+            return a;
+        }
+        buflen *= 2;
+    }
+}
+
+fn coeff_from_half_byte(b: u8) -> Option<i32> {
+    if (b as i32) < 15 {
+        Some(ETA - (b as i32 % 5))
+    } else {
+        None
+    }
+}
+
+fn rej_bounded_poly(seed: &[u8]) -> Poly {
+    let mut a = ZERO_POLY;
+    let mut buflen = SHAKE256_RATE * 5;
+    loop {
+        let mut buf = shake256_bytes(seed, buflen);
+        let mut ctr = 0usize;
+        let mut pos = 0usize;
+        while ctr < N && pos < buf.len() {
+            let b = buf[pos];
+            pos += 1;
+            if let Some(v) = coeff_from_half_byte(b & 15) {
+                a[ctr] = v;
+                ctr += 1;
+            }
+            if ctr < N {
+                if let Some(v) = coeff_from_half_byte(b >> 4) {
+                    a[ctr] = v;
+                    ctr += 1;
+                }
+            }
+        }
+        let done = ctr == N;
+        buf[..].zeroize();
+        if done {
+            return a;
+        }
+        buflen *= 2;
+    }
+}
+
+fn expand_a(rho: &[u8]) -> Vec<Vec<Poly>> {
+    let mut a = vec![vec![ZERO_POLY; L]; K];
+    let mut seed = [0u8; 34];
+    seed[..32].copy_from_slice(rho);
+    for r in 0..K {
+        for s in 0..L {
+            seed[32] = s as u8;
+            seed[33] = r as u8;
+            a[r][s] = rej_ntt_poly(&seed);
+        }
+    }
+    a
+}
+
+fn expand_s(rho_prime: &[u8]) -> (Vec<Poly>, Vec<Poly>) {
+    let mut s1 = vec![ZERO_POLY; L];
+    let mut s2 = vec![ZERO_POLY; K];
+    let mut seed = [0u8; 66];
+    seed[..64].copy_from_slice(rho_prime);
+    for i in 0..L {
+        let idx = i as u16;
+        seed[64] = (idx & 255) as u8;
+        seed[65] = (idx >> 8) as u8;
+        s1[i] = rej_bounded_poly(&seed);
+    }
+    for i in 0..K {
+        let idx = (i + L) as u16;
+        seed[64] = (idx & 255) as u8;
+        seed[65] = (idx >> 8) as u8;
+        s2[i] = rej_bounded_poly(&seed);
+    }
+    seed[..].zeroize();
+    (s1, s2)
+}
+
+fn expand_mask(rho_pp: &[u8], kappa: usize) -> Vec<Poly> {
+    let mut y = vec![ZERO_POLY; L];
+    let mut seed = [0u8; 66];
+    seed[..64].copy_from_slice(rho_pp);
+    for r in 0..L {
+        let idx = (kappa + r) as u16;
+        seed[64] = (idx & 255) as u8;
+        seed[65] = (idx >> 8) as u8;
+        let v = Zeroizing::new(shake256_bytes(&seed, 32 * 20));
+        let mut raw = unpack_bits(&v, 20);
+        for i in 0..N {
+            y[r][i] = to_pos(GAMMA1 - raw[i]);
+        }
+        raw[..].zeroize();
+    }
+    seed[..].zeroize();
+    y
+}
+
+fn sample_in_ball(c_tilde: &[u8]) -> Poly {
+    const BUFLEN: usize = SHAKE256_RATE * 2;
+    let mut buf = shake256_bytes(c_tilde, BUFLEN);
+    let mut signs: u64 = 0;
+    for (k, byte) in buf[..8].iter().enumerate() {
+        signs |= (*byte as u64) << (8 * k);
+    }
+    let mut c = ZERO_POLY;
+    let mut pos: i64 = 8;
+    let mut complete: i64 = -1;
+    for (bit, i) in (N - TAU..N).enumerate() {
+        let mut j: i64 = 0;
+        let mut next: i64 = pos;
+        let mut open: i64 = -1;
+        for (k, byte) in buf.iter().enumerate().skip(8) {
+            let k = k as i64;
+            let b = *byte as i64;
+            let take = !((k - pos) >> 63) & !((i as i64 - b) >> 63) & open;
+            j = (j & !take) | (b & take);
+            next = (next & !take) | ((k + 1) & take);
+            open &= !take;
+        }
+        complete &= !open;
+        pos = next;
+        let sign = 1 - 2 * ((signs >> bit) & 1) as i32;
+        let mut picked = 0i32;
+        for (m, slot) in c.iter().enumerate() {
+            let d = m as i64 ^ j;
+            let hit = !((d | d.wrapping_neg()) >> 63) as i32;
+            picked |= *slot & hit;
+        }
+        c[i] = picked;
+        for (m, slot) in c.iter_mut().enumerate() {
+            let d = m as i64 ^ j;
+            let hit = !((d | d.wrapping_neg()) >> 63) as i32;
+            *slot = (*slot & !hit) | (sign & hit);
+        }
+    }
+    buf[..].zeroize();
+    core::slice::from_mut(&mut signs).zeroize();
+    if complete != 0 {
+        return c;
+    }
+    sample_in_ball_extended(c_tilde)
+}
+
+fn sample_in_ball_extended(c_tilde: &[u8]) -> Poly {
+    let mut buflen = SHAKE256_RATE * 4;
+    loop {
+        let buf = shake256_bytes(c_tilde, buflen);
+        let mut c = ZERO_POLY;
+        let mut signs: u64 = 0;
+        for i in 0..8 {
+            signs |= (buf[i] as u64) << (8 * i);
+        }
+        let mut pos = 8usize;
+        let mut bit = 0usize;
+        let mut failed = false;
+        let mut i = N - TAU;
+        while i < N {
+            let mut j = 0usize;
+            loop {
+                if pos >= buf.len() {
+                    failed = true;
+                    break;
+                }
+                j = buf[pos] as usize;
+                pos += 1;
+                if j <= i {
+                    break;
+                }
+            }
+            if failed {
+                break;
+            }
+            c[i] = c[j];
+            c[j] = if (signs >> bit) & 1 == 1 { -1 } else { 1 };
+            bit += 1;
+            i += 1;
+        }
+        if !failed {
+            return c;
+        }
+        buflen *= 2;
+    }
+}
+
+fn pk_encode(rho: &[u8], t1: &[Poly]) -> PublicKey {
+    let mut out = Vec::with_capacity(PUBLIC_KEY_BYTES);
+    out.extend_from_slice(rho);
+    for poly in t1.iter() {
+        pack_bits(poly, 10, &mut out);
+    }
+    let mut pk = [0u8; PUBLIC_KEY_BYTES];
+    pk.copy_from_slice(&out);
+    pk
+}
+
+fn pk_decode(pk: &PublicKey) -> ([u8; 32], Vec<Poly>) {
+    let mut rho = [0u8; 32];
+    rho.copy_from_slice(&pk[..32]);
+    let mut t1 = vec![ZERO_POLY; K];
+    for i in 0..K {
+        let start = 32 + i * POLYT1_PACKED;
+        t1[i] = unpack_bits(&pk[start..start + POLYT1_PACKED], 10);
+    }
+    (rho, t1)
+}
+
+fn sk_encode_into(
+    rho: &[u8],
+    key: &[u8],
+    tr: &[u8],
+    s1: &[Poly],
+    s2: &[Poly],
+    t0: &[Poly],
+    sk: &mut SecretKey,
+) {
+    let mut out = Vec::with_capacity(SECRET_KEY_BYTES);
+    out.extend_from_slice(rho);
+    out.extend_from_slice(key);
+    out.extend_from_slice(tr);
+    for poly in s1.iter().chain(s2.iter()) {
+        let mut packed = ZERO_POLY;
+        for i in 0..N {
+            packed[i] = ETA - poly[i];
+        }
+        pack_bits(&packed, 3, &mut out);
+        packed[..].zeroize();
+    }
+    for poly in t0.iter() {
+        let mut packed = ZERO_POLY;
+        for i in 0..N {
+            packed[i] = (1 << (D - 1)) - poly[i];
+        }
+        pack_bits(&packed, 13, &mut out);
+        packed[..].zeroize();
+    }
+    sk.copy_from_slice(&out);
+    out[..].zeroize();
+}
+
+struct SecretComponents {
+    rho: [u8; 32],
+    key: [u8; 32],
+    tr: [u8; 64],
+    s1: Vec<Poly>,
+    s2: Vec<Poly>,
+    t0: Vec<Poly>,
+}
+
+impl Drop for SecretComponents {
+    fn drop(&mut self) {
+        self.rho[..].zeroize();
+        self.key[..].zeroize();
+        self.tr[..].zeroize();
+        for poly in self.s1.iter_mut() {
+            poly[..].zeroize();
+        }
+        for poly in self.s2.iter_mut() {
+            poly[..].zeroize();
+        }
+        for poly in self.t0.iter_mut() {
+            poly[..].zeroize();
+        }
+    }
+}
+
+impl core::fmt::Debug for SecretComponents {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str("SecretComponents(redacted)")
+    }
+}
+
+fn sk_decode(sk: &SecretKey) -> Option<SecretComponents> {
+    let mut rho = [0u8; 32];
+    rho.copy_from_slice(&sk[..32]);
+    let mut key = [0u8; 32];
+    key.copy_from_slice(&sk[32..64]);
+    let mut tr = [0u8; 64];
+    tr.copy_from_slice(&sk[64..128]);
+
+    let mut off = 128usize;
+    let mut s1 = vec![ZERO_POLY; L];
+    for poly in s1.iter_mut() {
+        let mut raw = unpack_bits(&sk[off..off + POLYETA_PACKED], 3);
+        for i in 0..N {
+            if raw[i] > 2 * ETA {
+                raw[..].zeroize();
+                return None;
+            }
+            poly[i] = ETA - raw[i];
+        }
+        raw[..].zeroize();
+        off += POLYETA_PACKED;
+    }
+    let mut s2 = vec![ZERO_POLY; K];
+    for poly in s2.iter_mut() {
+        let mut raw = unpack_bits(&sk[off..off + POLYETA_PACKED], 3);
+        for i in 0..N {
+            if raw[i] > 2 * ETA {
+                raw[..].zeroize();
+                return None;
+            }
+            poly[i] = ETA - raw[i];
+        }
+        raw[..].zeroize();
+        off += POLYETA_PACKED;
+    }
+    let mut t0 = vec![ZERO_POLY; K];
+    for poly in t0.iter_mut() {
+        let mut raw = unpack_bits(&sk[off..off + POLYT0_PACKED], 13);
+        for i in 0..N {
+            poly[i] = (1 << (D - 1)) - raw[i];
+        }
+        raw[..].zeroize();
+        off += POLYT0_PACKED;
+    }
+    Some(SecretComponents {
+        rho,
+        key,
+        tr,
+        s1,
+        s2,
+        t0,
+    })
+}
+
+fn w1_encode(w1: &[Poly]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(K * POLYW1_PACKED);
+    for poly in w1.iter() {
+        pack_bits(poly, 4, &mut out);
+    }
+    out
+}
+
+fn hint_bit_pack(h: &[Poly]) -> Vec<u8> {
+    let mut y = vec![0u8; OMEGA + K];
+    let mut index = 0usize;
+    for i in 0..K {
+        for j in 0..N {
+            if h[i][j] != 0 {
+                y[index] = j as u8;
+                index += 1;
+            }
+        }
+        y[OMEGA + i] = index as u8;
+    }
+    y
+}
+
+fn hint_bit_unpack(y: &[u8]) -> Option<Vec<Poly>> {
+    let mut h = vec![ZERO_POLY; K];
+    let mut index = 0usize;
+    for i in 0..K {
+        let limit = y[OMEGA + i] as usize;
+        if limit < index || limit > OMEGA {
+            return None;
+        }
+        let first = index;
+        while index < limit {
+            if index > first && y[index - 1] >= y[index] {
+                return None;
+            }
+            h[i][y[index] as usize] = 1;
+            index += 1;
+        }
+    }
+    for &b in y.iter().take(OMEGA).skip(index) {
+        if b != 0 {
+            return None;
+        }
+    }
+    Some(h)
+}
+
+fn sig_encode(c_tilde: &[u8], z: &[Poly], h: &[Poly]) -> Signature {
+    let mut out = Vec::with_capacity(SIGNATURE_BYTES);
+    out.extend_from_slice(c_tilde);
+    for poly in z.iter() {
+        let mut packed = ZERO_POLY;
+        for i in 0..N {
+            packed[i] = GAMMA1 - center(poly[i]);
+        }
+        pack_bits(&packed, 20, &mut out);
+    }
+    out.extend_from_slice(&hint_bit_pack(h));
+    let mut sig = [0u8; SIGNATURE_BYTES];
+    sig.copy_from_slice(&out);
+    sig
+}
+
+struct DecodedSig {
+    c_tilde: Vec<u8>,
+    z: Vec<Poly>,
+    h: Vec<Poly>,
+}
+
+fn sig_decode(sig: &Signature) -> Option<DecodedSig> {
+    let c_tilde = sig[..CTILDE_BYTES].to_vec();
+    let mut z = vec![ZERO_POLY; L];
+    let mut off = CTILDE_BYTES;
+    for poly in z.iter_mut() {
+        let raw = unpack_bits(&sig[off..off + POLYZ_PACKED], 20);
+        for i in 0..N {
+            poly[i] = GAMMA1 - raw[i];
+        }
+        off += POLYZ_PACKED;
+    }
+    let h = hint_bit_unpack(&sig[off..off + OMEGA + K])?;
+    Some(DecodedSig { c_tilde, z, h })
+}
+
+fn hint_weight(h: &[Poly]) -> usize {
+    h.iter()
+        .map(|poly| poly.iter().filter(|&&x| x != 0).count())
+        .sum()
+}
+
+pub fn keygen(seed: &[u8; SEED_BYTES]) -> (PublicKey, SecretKey) {
+    let mut sk = [0u8; SECRET_KEY_BYTES];
+    let pk = keygen_into(seed, &mut sk);
+    (pk, sk)
+}
+
+pub fn sign_from_seed(
+    seed: &[u8; SEED_BYTES],
+    message: &[u8],
+    context: &[u8],
+    rnd: &[u8; 32],
+) -> Option<Signature> {
+    let mut sk = [0u8; SECRET_KEY_BYTES];
+    let _pk = keygen_into(seed, &mut sk);
+    let signature = sign(&sk, message, context, rnd);
+    sk[..].zeroize();
+    signature
+}
+
+pub fn keygen_into(seed: &[u8; SEED_BYTES], sk: &mut SecretKey) -> PublicKey {
+    let mut h_in = Vec::with_capacity(34);
+    h_in.extend_from_slice(seed);
+    h_in.push(K as u8);
+    h_in.push(L as u8);
+    let h_in = Zeroizing::new(h_in);
+    let expanded = Zeroizing::new(shake256_bytes(&h_in, 128));
+    let rho = &expanded[..32];
+    let rho_prime = &expanded[32..96];
+    let key = &expanded[96..128];
+
+    let a = expand_a(rho);
+    let (mut s1, mut s2) = expand_s(rho_prime);
+
+    let mut s1_hat = s1.clone();
+    for poly in s1_hat.iter_mut() {
+        for c in poly.iter_mut() {
+            *c = to_pos(*c);
+        }
+        ntt(poly);
+    }
+
+    let mut t1 = vec![ZERO_POLY; K];
+    let mut t0 = vec![ZERO_POLY; K];
+    for i in 0..K {
+        let mut acc = ZERO_POLY;
+        for j in 0..L {
+            pointwise_acc(&mut acc, &a[i][j], &s1_hat[j]);
+        }
+        inv_ntt(&mut acc);
+        for n in 0..N {
+            let t = add_q(acc[n], to_pos(s2[i][n]));
+            let (r1, r0) = power2round(t);
+            t1[i][n] = r1;
+            t0[i][n] = r0;
+        }
+        acc[..].zeroize();
+    }
+
+    let pk = pk_encode(rho, &t1);
+    let tr = shake256_bytes(&pk, 64);
+    sk_encode_into(rho, key, &tr, &s1, &s2, &t0, sk);
+
+    for poly in s1.iter_mut().chain(s2.iter_mut()).chain(s1_hat.iter_mut()) {
+        poly[..].zeroize();
+    }
+    for poly in t0.iter_mut() {
+        poly[..].zeroize();
+    }
+    pk
+}
+
+fn sign_with_mu(sk: &SecretKey, mu: &[u8], rnd: &[u8; 32]) -> Option<Signature> {
+    let sc = sk_decode(sk)?;
+    let a = expand_a(&sc.rho);
+
+    let mut s1_hat = SecretPolys::new(sc.s1.clone());
+    for poly in s1_hat.iter_mut() {
+        for c in poly.iter_mut() {
+            *c = to_pos(*c);
+        }
+        ntt(poly);
+    }
+    let mut s2_hat = SecretPolys::new(sc.s2.clone());
+    for poly in s2_hat.iter_mut() {
+        for c in poly.iter_mut() {
+            *c = to_pos(*c);
+        }
+        ntt(poly);
+    }
+    let mut t0_hat = SecretPolys::new(sc.t0.clone());
+    for poly in t0_hat.iter_mut() {
+        for c in poly.iter_mut() {
+            *c = to_pos(*c);
+        }
+        ntt(poly);
+    }
+
+    let mut seed = Vec::with_capacity(32 + 32 + mu.len());
+    seed.extend_from_slice(&sc.key);
+    seed.extend_from_slice(rnd);
+    seed.extend_from_slice(mu);
+    let seed = Zeroizing::new(seed);
+    let rho_pp = Zeroizing::new(shake256_bytes(&seed, 64));
+
+    let mut kappa = 0usize;
+    loop {
+        let y = SecretPolys::new(expand_mask(&rho_pp, kappa));
+        kappa += L;
+
+        let mut y_hat = SecretPolys::new(y.clone());
+        for poly in y_hat.iter_mut() {
+            ntt(poly);
+        }
+        let mut w = SecretPolys::new(vec![ZERO_POLY; K]);
+        let mut w1 = SecretPolys::new(vec![ZERO_POLY; K]);
+        for i in 0..K {
+            let mut acc = ZERO_POLY;
+            for j in 0..L {
+                pointwise_acc(&mut acc, &a[i][j], &y_hat[j]);
+            }
+            inv_ntt(&mut acc);
+            w[i] = acc;
+            for n in 0..N {
+                w1[i][n] = high_bits(w[i][n]);
+            }
+            acc[..].zeroize();
+        }
+
+        let mut ch_in = Vec::with_capacity(mu.len() + K * POLYW1_PACKED);
+        ch_in.extend_from_slice(mu);
+        ch_in.extend_from_slice(&w1_encode(&w1));
+        let c_tilde = shake256_bytes(&ch_in, CTILDE_BYTES);
+        let c = sample_in_ball(&c_tilde);
+        let mut c_hat = c;
+        for coeff in c_hat.iter_mut() {
+            *coeff = to_pos(*coeff);
+        }
+        ntt(&mut c_hat);
+
+        let mut z = SecretPolys::new(vec![ZERO_POLY; L]);
+        for j in 0..L {
+            let mut cs1 = ZERO_POLY;
+            pointwise_acc(&mut cs1, &c_hat, &s1_hat[j]);
+            inv_ntt(&mut cs1);
+            for n in 0..N {
+                z[j][n] = add_q(y[j][n], cs1[n]);
+            }
+            cs1[..].zeroize();
+        }
+        let mut z_norm = 0i32;
+        for poly in z.iter() {
+            z_norm = z_norm.max(inf_norm(poly));
+        }
+
+        let mut cs2 = SecretPolys::new(vec![ZERO_POLY; K]);
+        let mut r0_norm = 0i32;
+        for i in 0..K {
+            let mut acc = ZERO_POLY;
+            pointwise_acc(&mut acc, &c_hat, &s2_hat[i]);
+            inv_ntt(&mut acc);
+            cs2[i] = acc;
+            for n in 0..N {
+                let r0 = low_bits(sub_q(w[i][n], cs2[i][n]));
+                r0_norm = r0_norm.max(r0.abs());
+            }
+            acc[..].zeroize();
+        }
+
+        if z_norm >= GAMMA1 - BETA || r0_norm >= GAMMA2 - BETA {
+            continue;
+        }
+
+        let mut h = vec![ZERO_POLY; K];
+        let mut ct0_norm = 0i32;
+        for i in 0..K {
+            let mut ct0 = ZERO_POLY;
+            pointwise_acc(&mut ct0, &c_hat, &t0_hat[i]);
+            inv_ntt(&mut ct0);
+            for n in 0..N {
+                ct0_norm = ct0_norm.max(center(ct0[n]).abs());
+                let neg_ct0 = sub_q(0, ct0[n]);
+                let r = add_q(sub_q(w[i][n], cs2[i][n]), ct0[n]);
+                h[i][n] = make_hint(neg_ct0, r) as i32;
+            }
+            ct0[..].zeroize();
+        }
+
+        if ct0_norm >= GAMMA2 || hint_weight(&h) > OMEGA {
+            continue;
+        }
+
+        return Some(sig_encode(&c_tilde, &z, &h));
+    }
+}
+
+fn compute_mu(tr: &[u8], m_prime: &[u8]) -> Vec<u8> {
+    let mut buf = Vec::with_capacity(tr.len() + m_prime.len());
+    buf.extend_from_slice(tr);
+    buf.extend_from_slice(m_prime);
+    shake256_bytes(&buf, 64)
+}
+
+#[cfg(any(test, feature = "acvp-internals"))]
+pub fn sign_internal(sk: &SecretKey, m_prime: &[u8], rnd: &[u8; 32]) -> Signature {
+    sign_internal_impl(sk, m_prime, rnd).expect("a key produced by keygen decodes")
+}
+
+#[cfg(any(test, feature = "acvp-internals"))]
+pub fn verify_internal(pk: &PublicKey, m_prime: &[u8], sig: &Signature) -> bool {
+    verify_internal_impl(pk, m_prime, sig)
+}
+
+pub(crate) fn sign_internal_impl(
+    sk: &SecretKey,
+    m_prime: &[u8],
+    rnd: &[u8; 32],
+) -> Option<Signature> {
+    let sc = sk_decode(sk)?;
+    let mu = compute_mu(&sc.tr, m_prime);
+    sign_with_mu(sk, &mu, rnd)
+}
+
+pub(crate) fn verify_internal_impl(pk: &PublicKey, m_prime: &[u8], sig: &Signature) -> bool {
+    let tr = shake256_bytes(pk, 64);
+    let mu = compute_mu(&tr, m_prime);
+    verify_with_mu(pk, &mu, sig)
+}
+
+fn verify_with_mu(pk: &PublicKey, mu: &[u8], sig: &Signature) -> bool {
+    let decoded = match sig_decode(sig) {
+        Some(d) => d,
+        None => return false,
+    };
+    let (rho, t1) = pk_decode(pk);
+
+    if t1.iter().all(|poly| poly.iter().all(|&c| c == 0)) {
+        return false;
+    }
+
+    let mut z_norm = 0i32;
+    for poly in decoded.z.iter() {
+        for &c in poly.iter() {
+            z_norm = z_norm.max(c.abs());
+        }
+    }
+    if z_norm >= GAMMA1 - BETA {
+        return false;
+    }
+
+    let a = expand_a(&rho);
+    let c = sample_in_ball(&decoded.c_tilde);
+    let mut c_hat = c;
+    for coeff in c_hat.iter_mut() {
+        *coeff = to_pos(*coeff);
+    }
+    ntt(&mut c_hat);
+
+    let mut z_hat = decoded.z.clone();
+    for poly in z_hat.iter_mut() {
+        for c in poly.iter_mut() {
+            *c = to_pos(*c);
+        }
+        ntt(poly);
+    }
+
+    let mut t1_hat = t1.clone();
+    for poly in t1_hat.iter_mut() {
+        for c in poly.iter_mut() {
+            *c = *c << D;
+        }
+        ntt(poly);
+    }
+
+    let mut w1 = vec![ZERO_POLY; K];
+    for i in 0..K {
+        let mut acc = ZERO_POLY;
+        for j in 0..L {
+            pointwise_acc(&mut acc, &a[i][j], &z_hat[j]);
+        }
+        let mut ct1 = ZERO_POLY;
+        pointwise_acc(&mut ct1, &c_hat, &t1_hat[i]);
+        for n in 0..N {
+            acc[n] = sub_q(acc[n], ct1[n]);
+        }
+        inv_ntt(&mut acc);
+        for n in 0..N {
+            w1[i][n] = use_hint(decoded.h[i][n] as u8, acc[n]);
+        }
+    }
+
+    let mut ch_in = Vec::with_capacity(mu.len() + K * POLYW1_PACKED);
+    ch_in.extend_from_slice(mu);
+    ch_in.extend_from_slice(&w1_encode(&w1));
+    let c_tilde = shake256_bytes(&ch_in, CTILDE_BYTES);
+
+    c_tilde == decoded.c_tilde
+}
+
+fn format_message(context: &[u8], message: &[u8]) -> Option<Vec<u8>> {
+    if context.len() > 255 {
+        return None;
+    }
+    let mut m = Vec::with_capacity(2 + context.len() + message.len());
+    m.push(0);
+    m.push(context.len() as u8);
+    m.extend_from_slice(context);
+    m.extend_from_slice(message);
+    Some(m)
+}
+
+pub fn sign(sk: &SecretKey, message: &[u8], context: &[u8], rnd: &[u8; 32]) -> Option<Signature> {
+    let m_prime = format_message(context, message)?;
+    sign_internal_impl(sk, &m_prime, rnd)
+}
+
+#[cfg(feature = "os-rng")]
+pub fn keygen_os() -> Option<(PublicKey, SecretKey)> {
+    let mut seed = [0u8; SEED_BYTES];
+    if crate::rng::try_fill_random(&mut seed).is_err() {
+        seed[..].zeroize();
+        return None;
+    }
+    let out = keygen(&seed);
+    seed[..].zeroize();
+    Some(out)
+}
+
+#[cfg(feature = "os-rng")]
+pub fn sign_os(sk: &SecretKey, message: &[u8], context: &[u8]) -> Option<Signature> {
+    let mut rnd = [0u8; 32];
+    if crate::rng::try_fill_random(&mut rnd).is_err() {
+        rnd[..].zeroize();
+        return None;
+    }
+    let out = sign(sk, message, context, &rnd);
+    rnd[..].zeroize();
+    out
+}
+
+pub fn verify(pk: &PublicKey, message: &[u8], signature: &Signature, context: &[u8]) -> bool {
+    let m_prime = match format_message(context, message) {
+        Some(m) => m,
+        None => return false,
+    };
+    verify_internal_impl(pk, &m_prime, signature)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use std::path::PathBuf;
+
+    fn hex(s: &str) -> Vec<u8> {
+        if s == "-" {
+            return Vec::new();
+        }
+        assert!(s.len() % 2 == 0);
+        (0..s.len() / 2)
+            .map(|i| u8::from_str_radix(&s[2 * i..2 * i + 2], 16).unwrap())
+            .collect()
+    }
+
+    fn as_array<const M: usize>(v: &[u8]) -> [u8; M] {
+        let mut a = [0u8; M];
+        a.copy_from_slice(v);
+        a
+    }
+
+    fn seed32(v: &[u8]) -> [u8; 32] {
+        as_array::<32>(v)
+    }
+
+    #[test]
+    fn mul_q_matches_rem_euclid_over_edges_and_a_random_sweep() {
+        let reference = |a: i32, b: i32| ((a as i64 * b as i64).rem_euclid(Q as i64)) as i32;
+        let edges = [0, 1, 2, Q - 1, Q - 2, Q / 2, Q / 2 + 1];
+        for &a in &edges {
+            for b in 0..Q {
+                assert_eq!(mul_q(a, b), reference(a, b), "edge a={a} b={b}");
+            }
+        }
+        let mut s: u64 = 0x9e37_79b9_7f4a_7c15;
+        for _ in 0..4_000_000 {
+            s = s.wrapping_mul(6364136223846793005).wrapping_add(1);
+            let a = ((s >> 33) as u32 % Q as u32) as i32;
+            s = s.wrapping_mul(6364136223846793005).wrapping_add(1);
+            let b = ((s >> 33) as u32 % Q as u32) as i32;
+            assert_eq!(mul_q(a, b), reference(a, b), "rand a={a} b={b}");
+        }
+    }
+
+    fn load(name: &str) -> String {
+        let mut path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        path.push("vectors/ml-dsa");
+        path.push(name);
+        fs::read_to_string(path).unwrap()
+    }
+
+    fn records(name: &str) -> Vec<Vec<String>> {
+        load(name)
+            .lines()
+            .filter(|l| !l.is_empty() && !l.starts_with('#'))
+            .map(|l| l.split_whitespace().map(|s| s.to_string()).collect())
+            .collect()
+    }
+
+    fn lcg(seed: u64) -> impl FnMut() -> i32 {
+        let mut s = seed;
+        move || {
+            s = s
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            ((s >> 33) as i32).rem_euclid(Q)
+        }
+    }
+
+    fn power2round_branchy(r: i32) -> (i32, i32) {
+        let mut r0 = r & ((1 << D) - 1);
+        if r0 > (1 << (D - 1)) {
+            r0 -= 1 << D;
+        }
+        let r1 = (r - r0) >> D;
+        (r1, r0)
+    }
+
+    fn decompose_branchy(r: i32) -> (i32, i32) {
+        let mut r0 = r % (2 * GAMMA2);
+        if r0 > GAMMA2 {
+            r0 -= 2 * GAMMA2;
+        }
+        if r - r0 == Q - 1 {
+            return (0, r0 - 1);
+        }
+        let r1 = (r - r0) / (2 * GAMMA2);
+        (r1, r0)
+    }
+
+    fn high_bits_branchy(r: i32) -> i32 {
+        decompose_branchy(r).0
+    }
+
+    fn make_hint_branchy(z: i32, r: i32) -> u8 {
+        if high_bits_branchy(r) != high_bits_branchy(add_q(r, z)) {
+            1
+        } else {
+            0
+        }
+    }
+
+    #[test]
+    fn constant_time_rounding_matches_reference_exhaustively() {
+        for r in 0..Q {
+            assert_eq!(power2round(r), power2round_branchy(r), "power2round r={r}");
+            assert_eq!(decompose(r), decompose_branchy(r), "decompose r={r}");
+            assert_eq!(high_bits(r), high_bits_branchy(r), "high_bits r={r}");
+            assert_eq!(low_bits(r), decompose_branchy(r).1, "low_bits r={r}");
+        }
+    }
+
+    #[test]
+    fn constant_time_make_hint_matches_reference() {
+        let mut next = lcg(0xD1B5_4A32_D192_ED03);
+        for _ in 0..2_000_000 {
+            let r = next();
+            let z = next();
+            assert_eq!(
+                make_hint(z, r),
+                make_hint_branchy(z, r),
+                "make_hint z={z} r={r}"
+            );
+        }
+        let mut r = 0;
+        while r < Q {
+            for z in [-2i32, -1, 0, 1, 2, GAMMA2, -GAMMA2, Q - 1] {
+                let zz = to_pos(z);
+                assert_eq!(
+                    make_hint(zz, r),
+                    make_hint_branchy(zz, r),
+                    "make_hint boundary z={zz} r={r}"
+                );
+            }
+            r += GAMMA2 / 2;
+        }
+    }
+
+    #[test]
+    fn ntt_then_inv_ntt_is_the_identity() {
+        let mut next = lcg(0x9E37_79B9_7F4A_7C15);
+        for _ in 0..2000 {
+            let mut p = ZERO_POLY;
+            for c in p.iter_mut() {
+                *c = next();
+            }
+            let original = p;
+            ntt(&mut p);
+            inv_ntt(&mut p);
+            assert_eq!(p, original, "inv_ntt(ntt(p)) must be the identity");
+        }
+    }
+
+    #[test]
+    fn pointwise_product_is_negacyclic_convolution() {
+        let mut next = lcg(0x243F_6A88_85A3_08D3);
+        for _ in 0..200 {
+            let mut a = ZERO_POLY;
+            for c in a.iter_mut() {
+                *c = next();
+            }
+            let mut b = ZERO_POLY;
+            for c in b.iter_mut() {
+                *c = next();
+            }
+            let mut expected = ZERO_POLY;
+            for i in 0..N {
+                for j in 0..N {
+                    let prod = mul_q(a[i], b[j]);
+                    let k = i + j;
+                    if k < N {
+                        expected[k] = add_q(expected[k], prod);
+                    } else {
+                        expected[k - N] = sub_q(expected[k - N], prod);
+                    }
+                }
+            }
+            let mut a_hat = a;
+            ntt(&mut a_hat);
+            let mut b_hat = b;
+            ntt(&mut b_hat);
+            let mut c_hat = ZERO_POLY;
+            pointwise_acc(&mut c_hat, &a_hat, &b_hat);
+            inv_ntt(&mut c_hat);
+            assert_eq!(
+                c_hat, expected,
+                "transform domain product must equal negacyclic convolution"
+            );
+        }
+    }
+
+    #[test]
+    fn keygen_matches_official_vectors() {
+        let recs = records("keygen_87.txt");
+        assert!(!recs.is_empty());
+        for r in &recs {
+            let seed = seed32(&hex(&r[0]));
+            let want_pk = hex(&r[1]);
+            let want_sk = hex(&r[2]);
+            let (pk, sk) = keygen(&seed);
+            assert_eq!(&pk[..], &want_pk[..], "public key mismatch");
+            assert_eq!(&sk[..], &want_sk[..], "secret key mismatch");
+        }
+    }
+
+    #[test]
+    fn sign_internal_matches_official_vectors() {
+        let recs = records("siggen_internal_87.txt");
+        assert!(!recs.is_empty());
+        for r in &recs {
+            let message = hex(&r[0]);
+            let rnd = seed32(&hex(&r[1]));
+            let sk = as_array::<SECRET_KEY_BYTES>(&hex(&r[2]));
+            let want_sig = hex(&r[3]);
+            let sig = sign_internal(&sk, &message, &rnd);
+            assert_eq!(&sig[..], &want_sig[..], "signature mismatch");
+        }
+    }
+
+    #[test]
+    fn sign_external_matches_official_vectors() {
+        let recs = records("siggen_external_87.txt");
+        assert!(!recs.is_empty());
+        for r in &recs {
+            let message = hex(&r[0]);
+            let context = hex(&r[1]);
+            let rnd = seed32(&hex(&r[2]));
+            let sk = as_array::<SECRET_KEY_BYTES>(&hex(&r[3]));
+            let want_sig = hex(&r[4]);
+            let sig = sign(&sk, &message, &context, &rnd).unwrap();
+            assert_eq!(&sig[..], &want_sig[..], "signature mismatch");
+        }
+    }
+
+    #[test]
+    fn verify_external_matches_official_vectors() {
+        let recs = records("sigver_external_87.txt");
+        assert!(!recs.is_empty());
+        for r in &recs {
+            let expected = r[0] == "1";
+            let pk = as_array::<PUBLIC_KEY_BYTES>(&hex(&r[1]));
+            let message = hex(&r[2]);
+            let context = hex(&r[3]);
+            let sig = as_array::<SIGNATURE_BYTES>(&hex(&r[4]));
+            assert_eq!(verify(&pk, &message, &sig, &context), expected);
+        }
+    }
+
+    #[test]
+    fn verify_internal_matches_official_vectors() {
+        let recs = records("sigver_internal_87.txt");
+        assert!(!recs.is_empty());
+        for r in &recs {
+            let expected = r[0] == "1";
+            let pk = as_array::<PUBLIC_KEY_BYTES>(&hex(&r[1]));
+            let message = hex(&r[2]);
+            let sig = as_array::<SIGNATURE_BYTES>(&hex(&r[3]));
+            assert_eq!(verify_internal(&pk, &message, &sig), expected);
+        }
+    }
+
+    #[test]
+    fn sign_then_verify_round_trip() {
+        let seed = [7u8; 32];
+        let (pk, sk) = keygen(&seed);
+        let message = b"quantova ml-dsa round trip";
+        let context = b"ctx";
+        let rnd = [0u8; 32];
+        let sig = sign(&sk, message, context, &rnd).unwrap();
+        assert!(verify(&pk, message, &sig, context));
+        assert!(!verify(&pk, b"other message", &sig, context));
+        assert!(!verify(&pk, message, &sig, b"other ctx"));
+    }
+
+    #[test]
+    fn sign_internal_is_deterministic_for_fixed_inputs() {
+        let seed = [11u8; 32];
+        let (_, sk) = keygen(&seed);
+        let message = b"quantova determinism";
+        let rnd = [4u8; 32];
+        let first = sign_internal(&sk, message, &rnd);
+        let second = sign_internal(&sk, message, &rnd);
+        assert_eq!(&first[..], &second[..]);
+    }
+
+    #[cfg(feature = "os-rng")]
+    #[test]
+    fn os_helpers_are_distinct_and_round_trip() {
+        let (pk1, sk1) = keygen_os().unwrap();
+        let (pk2, _sk2) = keygen_os().unwrap();
+        assert_ne!(&pk1[..], &pk2[..], "OS keygen must not repeat public keys");
+
+        let message = b"quantova os csprng";
+        let sig = sign_os(&sk1, message, b"").expect("sign");
+        assert!(
+            verify(&pk1, message, &sig, b""),
+            "OS keygen and sign must verify"
+        );
+        assert!(
+            !verify(&pk2, message, &sig, b""),
+            "a different key must reject"
+        );
+    }
+
+    #[test]
+    fn secret_components_debug_is_redacted() {
+        let seed = [1u8; 32];
+        let (_, sk) = keygen(&seed);
+        let components = sk_decode(&sk).expect("a key produced by keygen decodes");
+        assert_eq!(format!("{:?}", components), "SecretComponents(redacted)");
+    }
+
+    pub(super) fn signature_carrying_a_hint(
+        sk: &SecretKey,
+        context: &[u8],
+        rnd: &[u8; 32],
+    ) -> (Vec<u8>, Signature) {
+        for n in 0u16..64 {
+            let message = n.to_le_bytes().to_vec();
+            let sig = sign(sk, &message, context, rnd).unwrap();
+            let decoded = sig_decode(&sig).unwrap();
+            let weight = hint_weight(&decoded.h);
+            if weight > 0 && weight < OMEGA {
+                return (message, sig);
+            }
+        }
+        panic!("no signature with a workable hint weight was produced");
+    }
+
+    fn z_inf_norm(decoded: &DecodedSig) -> i32 {
+        let mut max = 0i32;
+        for poly in decoded.z.iter() {
+            for &c in poly.iter() {
+                max = max.max(c.abs());
+            }
+        }
+        max
+    }
+
+    #[test]
+    fn verify_rejects_mutated_but_wellformed_signatures() {
+        let (pk, sk) = keygen(&[0x42u8; 32]);
+        let context = b"qtv-reject";
+        let rnd = [0u8; 32];
+        let (message, sig) = signature_carrying_a_hint(&sk, context, &rnd);
+        assert!(
+            verify(&pk, &message, &sig, context),
+            "the honest signature verifies"
+        );
+
+        let decoded = sig_decode(&sig).unwrap();
+        let reencoded = sig_encode(&decoded.c_tilde, &decoded.z, &decoded.h);
+        assert_eq!(
+            &reencoded[..],
+            &sig[..],
+            "decode then encode is the identity"
+        );
+
+        {
+            let mut s = sig;
+            s[0] ^= 0x01;
+            assert!(
+                !verify(&pk, &message, &s, context),
+                "a perturbed c-tilde must reject"
+            );
+        }
+
+        {
+            let mut d = sig_decode(&sig).unwrap();
+            let mut cleared = false;
+            'clear: for i in 0..K {
+                for n in 0..N {
+                    if d.h[i][n] != 0 {
+                        d.h[i][n] = 0;
+                        cleared = true;
+                        break 'clear;
+                    }
+                }
+            }
+            assert!(cleared, "the chosen signature carries a hint bit to clear");
+            let s = sig_encode(&d.c_tilde, &d.z, &d.h);
+            assert!(
+                sig_decode(&s).is_some(),
+                "the mutated hint is still well-formed"
+            );
+            assert!(
+                !verify(&pk, &message, &s, context),
+                "clearing a hint bit must reject"
+            );
+        }
+
+        {
+            let mut d = sig_decode(&sig).unwrap();
+            let n = (0..N)
+                .find(|&n| d.h[0][n] == 0)
+                .expect("row 0 has an unset position");
+            d.h[0][n] = 1;
+            let s = sig_encode(&d.c_tilde, &d.z, &d.h);
+            assert!(
+                sig_decode(&s).is_some(),
+                "the added hint stays within OMEGA"
+            );
+            assert!(
+                !verify(&pk, &message, &s, context),
+                "adding a hint bit must reject"
+            );
+        }
+
+        {
+            let mut d = sig_decode(&sig).unwrap();
+            let mut nudged = false;
+            'nudge: for j in 0..L {
+                for n in 0..N {
+                    if center(d.z[j][n]).abs() < 1000 {
+                        d.z[j][n] += 1;
+                        nudged = true;
+                        break 'nudge;
+                    }
+                }
+            }
+            assert!(nudged, "a small z coefficient exists to nudge");
+            let s = sig_encode(&d.c_tilde, &d.z, &d.h);
+            let d2 = sig_decode(&s).unwrap();
+            assert!(
+                z_inf_norm(&d2) < GAMMA1 - BETA,
+                "the nudged z is still in bound"
+            );
+            assert!(
+                !verify(&pk, &message, &s, context),
+                "an in-bound z nudge must reject"
+            );
+        }
+
+        {
+            let mut d = sig_decode(&sig).unwrap();
+            d.z[0][0] = GAMMA1 - BETA;
+            let s = sig_encode(&d.c_tilde, &d.z, &d.h);
+            let d2 = sig_decode(&s).unwrap();
+            assert_eq!(
+                z_inf_norm(&d2),
+                GAMMA1 - BETA,
+                "the boundary coefficient survives encoding"
+            );
+            assert!(
+                !verify(&pk, &message, &s, context),
+                "a z at the bound must reject"
+            );
+        }
+
+        {
+            let mut d = sig_decode(&sig).unwrap();
+            d.z[0][0] = GAMMA1 - 1;
+            let s = sig_encode(&d.c_tilde, &d.z, &d.h);
+            assert!(
+                !verify(&pk, &message, &s, context),
+                "an over-bound z must reject"
+            );
+        }
+    }
+
+    #[test]
+    fn malformed_hint_encodings_are_refused_at_decode() {
+        let (pk, sk) = keygen(&[0x7bu8; 32]);
+        let context = b"qtv-hint";
+        let rnd = [0u8; 32];
+        let (message, sig) = signature_carrying_a_hint(&sk, context, &rnd);
+        let hint_off = CTILDE_BYTES + L * POLYZ_PACKED;
+
+        {
+            let mut s = sig;
+            s[hint_off + OMEGA] = (OMEGA + 1) as u8;
+            assert!(
+                sig_decode(&s).is_none(),
+                "an over-OMEGA hint count does not decode"
+            );
+            assert!(
+                !verify(&pk, &message, &s, context),
+                "and verification refuses it"
+            );
+        }
+
+        {
+            let mut d = sig_decode(&sig).unwrap();
+            for n in 0..N {
+                d.h[0][n] = 0;
+            }
+            d.h[0][4] = 1;
+            d.h[0][9] = 1;
+            let mut s = sig_encode(&d.c_tilde, &d.z, &d.h);
+            let a = s[hint_off];
+            let b = s[hint_off + 1];
+            s[hint_off] = a.max(b);
+            s[hint_off + 1] = a.min(b);
+            assert!(
+                sig_decode(&s).is_none(),
+                "decreasing positions do not decode"
+            );
+            assert!(
+                !verify(&pk, &message, &s, context),
+                "and verification refuses it"
+            );
+        }
+
+        {
+            let mut s = sig;
+            s[hint_off + OMEGA - 1] = 0xff;
+            assert!(
+                sig_decode(&s).is_none(),
+                "trailing nonzero hint bytes do not decode"
+            );
+            assert!(
+                !verify(&pk, &message, &s, context),
+                "and verification refuses it"
+            );
+        }
+    }
+
+    #[test]
+    fn no_single_bit_flip_of_a_valid_signature_verifies() {
+        let (pk, sk) = keygen(&[0x11u8; 32]);
+        let context = b"qtv-flip";
+        let message = b"quantova ml-dsa differential armor";
+        let rnd = [0u8; 32];
+        let sig = sign(&sk, message, context, &rnd).unwrap();
+        assert!(
+            verify(&pk, message, &sig, context),
+            "the honest signature verifies"
+        );
+
+        let mut next = lcg(0xF00D_BEEF_1234_5678);
+        for _ in 0..256 {
+            let bitpos = (next() as usize) % (SIGNATURE_BYTES * 8);
+            let mut s = sig;
+            s[bitpos / 8] ^= 1 << (bitpos % 8);
+            assert!(
+                !verify(&pk, message, &s, context),
+                "flipping signature bit {bitpos} must not verify"
+            );
+        }
+    }
+
+    #[test]
+    fn sign_from_seed_matches_keygen_then_sign() {
+        let seed = [7u8; 32];
+        let message = b"quantova";
+        let (_pk, sk) = keygen(&seed);
+        let direct = sign(&sk, message, &[], &[0u8; 32]).unwrap();
+        let sealed = sign_from_seed(&seed, message, &[], &[0u8; 32]).unwrap();
+        assert_eq!(&direct[..], &sealed[..]);
+    }
+
+    #[test]
+    fn secret_key_scratch_wipe_preserves_round_trip() {
+        let seed = [13u8; 32];
+        let (_, sk) = keygen(&seed);
+        let sc = sk_decode(&sk).expect("a key produced by keygen decodes");
+        let mut reencoded = [0u8; SECRET_KEY_BYTES];
+        sk_encode_into(
+            &sc.rho,
+            &sc.key,
+            &sc.tr,
+            &sc.s1,
+            &sc.s2,
+            &sc.t0,
+            &mut reencoded,
+        );
+        assert_eq!(
+            &reencoded[..],
+            &sk[..],
+            "wiping decode and encode scratch must not corrupt secret key bytes still in use"
+        );
+    }
+}
+
+#[cfg(test)]
+mod hint_encoding_tests {
+    use super::tests::signature_carrying_a_hint;
+    use super::*;
+
+    fn honest_hint_bytes() -> Vec<u8> {
+        let (_pk, sk) = keygen(&[0x42u8; 32]);
+        let context = b"qtv-hint";
+        let rnd = [0u8; 32];
+        let (_m, sig) = signature_carrying_a_hint(&sk, context, &rnd);
+        let off = SIGNATURE_BYTES - (OMEGA + K);
+        sig[off..off + OMEGA + K].to_vec()
+    }
+
+    #[test]
+    fn an_honest_hint_unpacks() {
+        assert!(
+            hint_bit_unpack(&honest_hint_bytes()).is_some(),
+            "the honest hint must unpack or the refusals below prove nothing"
+        );
+    }
+
+    #[test]
+    fn a_limit_past_omega_is_refused() {
+        let mut y = honest_hint_bytes();
+        y[OMEGA] = (OMEGA + 1) as u8;
+        assert!(
+            hint_bit_unpack(&y).is_none(),
+            "a per polynomial limit above OMEGA must be refused, it reads indices that the \
+             signature never carried"
+        );
+    }
+
+    #[test]
+    fn a_limit_that_moves_backwards_is_refused() {
+        let mut y = honest_hint_bytes();
+        y[OMEGA] = 5;
+        y[OMEGA + 1] = 4;
+        assert!(
+            hint_bit_unpack(&y).is_none(),
+            "the per polynomial limits must not decrease, a backwards limit re reads another \
+             polynomial's indices"
+        );
+    }
+
+    #[test]
+    fn repeated_or_unordered_indices_are_refused() {
+        let mut y = vec![0u8; OMEGA + K];
+        y[0] = 7;
+        y[1] = 7;
+        y[OMEGA] = 2;
+        for i in 1..K {
+            y[OMEGA + i] = 2;
+        }
+        assert!(
+            hint_bit_unpack(&y).is_none(),
+            "a repeated index must be refused, strictly increasing is what makes the encoding \
+             canonical"
+        );
+
+        let mut y = vec![0u8; OMEGA + K];
+        y[0] = 9;
+        y[1] = 3;
+        y[OMEGA] = 2;
+        for i in 1..K {
+            y[OMEGA + i] = 2;
+        }
+        assert!(
+            hint_bit_unpack(&y).is_none(),
+            "a descending index pair must be refused"
+        );
+    }
+
+    #[test]
+    fn a_nonzero_byte_in_the_unused_tail_is_refused() {
+        let mut y = honest_hint_bytes();
+        let used = y[OMEGA + K - 1] as usize;
+        assert!(used < OMEGA, "the sample leaves an unused tail to poison");
+        y[used] = 0xff;
+        assert!(
+            hint_bit_unpack(&y).is_none(),
+            "a nonzero byte past the last used index must be refused, otherwise one signature \
+             has many encodings and becomes malleable"
+        );
+    }
+
+    #[test]
+    fn a_secret_key_holding_a_coefficient_past_the_bound_is_refused() {
+        let (_, mut sk) = keygen(&[3u8; 32]);
+        assert!(sign(&sk, b"m", b"", &[0u8; 32]).is_some());
+        for byte in sk[128..768].iter_mut() {
+            *byte = 0xff;
+        }
+        assert!(
+            sk_decode(&sk).is_none(),
+            "a nibble of fifteen is outside the range the scheme defines"
+        );
+        assert!(
+            sign(&sk, b"m", b"", &[0u8; 32]).is_none(),
+            "a key that does not decode is refused rather than signed with"
+        );
+    }
+}
