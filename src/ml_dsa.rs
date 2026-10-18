@@ -438,9 +438,8 @@ fn expand_mask(rho_pp: &[u8], kappa: usize) -> Vec<Poly> {
     y
 }
 
-fn sample_in_ball(c_tilde: &[u8]) -> Poly {
-    const BUFLEN: usize = SHAKE256_RATE * 2;
-    let mut buf = shake256_bytes(c_tilde, BUFLEN);
+fn sample_in_ball_with(c_tilde: &[u8], buflen: usize) -> Option<Poly> {
+    let mut buf = shake256_bytes(c_tilde, buflen);
     let mut signs: u64 = 0;
     for (k, byte) in buf[..8].iter().enumerate() {
         signs |= (*byte as u64) << (8 * k);
@@ -478,14 +477,17 @@ fn sample_in_ball(c_tilde: &[u8]) -> Poly {
     }
     buf[..].zeroize();
     core::slice::from_mut(&mut signs).zeroize();
-    if complete != 0 {
-        return c;
-    }
-    sample_in_ball_extended(c_tilde)
+    (complete != 0).then_some(c)
 }
 
-fn sample_in_ball_extended(c_tilde: &[u8]) -> Poly {
-    sample_in_ball_public(c_tilde, SHAKE256_RATE * 4)
+fn sample_in_ball(c_tilde: &[u8]) -> Poly {
+    let mut buflen = SHAKE256_RATE * 2;
+    loop {
+        if let Some(c) = sample_in_ball_with(c_tilde, buflen) {
+            return c;
+        }
+        buflen *= 2;
+    }
 }
 
 fn sample_in_ball_public(c_tilde: &[u8], start: usize) -> Poly {

@@ -376,9 +376,8 @@ fn expand_mask(rho_pp: &[u8], kappa: usize) -> Vec<Poly> {
     y
 }
 
-fn sample_in_ball(c_tilde: &[u8]) -> Poly {
-    const BUFLEN: usize = SHAKE256_RATE * 2;
-    let mut buf = shake256_bytes(c_tilde, BUFLEN);
+fn sample_in_ball_with(c_tilde: &[u8], buflen: usize) -> Option<Poly> {
+    let mut buf = shake256_bytes(c_tilde, buflen);
     let mut signs: u64 = 0;
     for (k, byte) in buf[..8].iter().enumerate() {
         signs |= (*byte as u64) << (8 * k);
@@ -416,47 +415,13 @@ fn sample_in_ball(c_tilde: &[u8]) -> Poly {
     }
     buf[..].zeroize();
     core::slice::from_mut(&mut signs).zeroize();
-    if complete != 0 {
-        return c;
-    }
-    sample_in_ball_extended(c_tilde)
+    (complete != 0).then_some(c)
 }
 
-fn sample_in_ball_extended(c_tilde: &[u8]) -> Poly {
-    let mut buflen = SHAKE256_RATE * 4;
+fn sample_in_ball(c_tilde: &[u8]) -> Poly {
+    let mut buflen = SHAKE256_RATE * 2;
     loop {
-        let buf = shake256_bytes(c_tilde, buflen);
-        let mut c = ZERO_POLY;
-        let mut signs: u64 = 0;
-        for i in 0..8 {
-            signs |= (buf[i] as u64) << (8 * i);
-        }
-        let mut pos = 8usize;
-        let mut bit = 0usize;
-        let mut failed = false;
-        let mut i = N - TAU;
-        while i < N {
-            let mut j = 0usize;
-            loop {
-                if pos >= buf.len() {
-                    failed = true;
-                    break;
-                }
-                j = buf[pos] as usize;
-                pos += 1;
-                if j <= i {
-                    break;
-                }
-            }
-            if failed {
-                break;
-            }
-            c[i] = c[j];
-            c[j] = if (signs >> bit) & 1 == 1 { -1 } else { 1 };
-            bit += 1;
-            i += 1;
-        }
-        if !failed {
+        if let Some(c) = sample_in_ball_with(c_tilde, buflen) {
             return c;
         }
         buflen *= 2;

@@ -564,7 +564,7 @@ pub fn decaps(dk: &[u8; DECAPS_KEY_BYTES], c: &Ciphertext) -> SharedSecret {
     }
     let canonical_mask = if canonical { 0xffu8 } else { 0x00u8 };
     let h_check = sha3_256(ek_pke);
-    let keep = ct_eq(&c_prime, c) & canonical_mask & ct_eq(&h_check, h);
+    let keep = core::hint::black_box(ct_eq(&c_prime, c) & canonical_mask & ct_eq(&h_check, h));
 
     let mut shared = SharedSecret::zeroed();
     let out = shared.as_mut_bytes();
