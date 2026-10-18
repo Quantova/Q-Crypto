@@ -619,13 +619,13 @@ impl core::fmt::Debug for SecretComponents {
 fn sk_decode(sk: &[u8; SECRET_KEY_BYTES]) -> Option<SecretComponents> {
     let mut rho = [0u8; 32];
     rho.copy_from_slice(&sk[..32]);
-    let mut key = [0u8; 32];
-    key.copy_from_slice(&sk[32..64]);
-    let mut tr = [0u8; 64];
-    tr.copy_from_slice(&sk[64..128]);
+    let mut key = Zeroizing::new([0u8; 32]);
+    key.as_mut().copy_from_slice(&sk[32..64]);
+    let mut tr = Zeroizing::new([0u8; 64]);
+    tr.as_mut().copy_from_slice(&sk[64..128]);
 
     let mut off = 128usize;
-    let mut s1 = vec![ZERO_POLY; L];
+    let mut s1 = SecretPolys::new(vec![ZERO_POLY; L]);
     for poly in s1.iter_mut() {
         let mut raw = unpack_bits(&sk[off..off + POLYETA_PACKED], 4);
         for i in 0..N {
@@ -638,7 +638,7 @@ fn sk_decode(sk: &[u8; SECRET_KEY_BYTES]) -> Option<SecretComponents> {
         raw[..].zeroize();
         off += POLYETA_PACKED;
     }
-    let mut s2 = vec![ZERO_POLY; K];
+    let mut s2 = SecretPolys::new(vec![ZERO_POLY; K]);
     for poly in s2.iter_mut() {
         let mut raw = unpack_bits(&sk[off..off + POLYETA_PACKED], 4);
         for i in 0..N {
@@ -651,7 +651,7 @@ fn sk_decode(sk: &[u8; SECRET_KEY_BYTES]) -> Option<SecretComponents> {
         raw[..].zeroize();
         off += POLYETA_PACKED;
     }
-    let mut t0 = vec![ZERO_POLY; K];
+    let mut t0 = SecretPolys::new(vec![ZERO_POLY; K]);
     for poly in t0.iter_mut() {
         let mut raw = unpack_bits(&sk[off..off + POLYT0_PACKED], 13);
         for i in 0..N {
@@ -662,11 +662,11 @@ fn sk_decode(sk: &[u8; SECRET_KEY_BYTES]) -> Option<SecretComponents> {
     }
     Some(SecretComponents {
         rho,
-        key,
-        tr,
-        s1,
-        s2,
-        t0,
+        key: *key,
+        tr: *tr,
+        s1: s1.into_inner(),
+        s2: s2.into_inner(),
+        t0: t0.into_inner(),
     })
 }
 
@@ -1111,6 +1111,15 @@ pub fn sign_os(sk: &[u8; SECRET_KEY_BYTES], message: &[u8], context: &[u8]) -> O
     let out = sign(sk, message, context, &rnd);
     rnd[..].zeroize();
     out
+}
+
+pub fn verify_strict(
+    pk: &PublicKey,
+    message: &[u8],
+    signature: &Signature,
+    context: &[u8],
+) -> bool {
+    !public_key_is_degenerate(pk) && verify(pk, message, signature, context)
 }
 
 pub fn verify(pk: &PublicKey, message: &[u8], signature: &Signature, context: &[u8]) -> bool {

@@ -62,6 +62,10 @@ impl<const M: usize> SecretPolys<M> {
     pub(crate) fn new(polys: Vec<[i32; M]>) -> Self {
         SecretPolys { polys }
     }
+
+    pub(crate) fn into_inner(mut self) -> Vec<[i32; M]> {
+        core::mem::take(&mut self.polys)
+    }
 }
 
 impl<const M: usize> Drop for SecretPolys<M> {
@@ -103,6 +107,12 @@ impl<T: AsMut<[u8]>> core::ops::Deref for Zeroizing<T> {
     type Target = T;
     fn deref(&self) -> &T {
         &self.value
+    }
+}
+
+impl<T: AsMut<[u8]>> core::ops::DerefMut for Zeroizing<T> {
+    fn deref_mut(&mut self) -> &mut T {
+        &mut self.value
     }
 }
 
