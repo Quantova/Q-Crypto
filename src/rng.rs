@@ -101,13 +101,6 @@ pub fn try_fill_random(buf: &mut [u8]) -> std::io::Result<()> {
     file.read_exact(buf)
 }
 
-#[deprecated(note = "panics when no entropy source is available, call try_fill_random")]
-pub fn fill_random(buf: &mut [u8]) {
-    try_fill_random(buf).expect(
-        "Q-Crypto: no OS entropy source (CSPRNG syscall and /dev/urandom both unavailable)",
-    );
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -23,9 +23,9 @@ Each primitive is implemented in dependency order, and each one gates the next.
 - **SLH-DSA-SHAKE-192s** (FIPS 205, security category 3). Stateless hash based signatures, the conservative option whose security rests on the hash alone. The small parameter set, a 48 byte public key against a 16224 byte signature.
 - **ChaCha20-Poly1305** (RFC 8439). The single 256 bit symmetric AEAD the crypto policy permits, used by the transport. It stands alone and depends on nothing else in the crate.
 
-FN-DSA (FIPS 206) is not implemented. The `fn_dsa` module and the `fn-dsa` feature are empty placeholders until the standard is published in final form and the cryptographic transition track admits it.
+FN-DSA (FIPS 206) is not implemented, and the crate carries no module or feature for it.
 
-`seal` takes its nonce from the caller, who must never repeat a nonce under one key. The transport derives each nonce from a per session IV and the record sequence number, so a nonce never repeats. `seal_os` draws a random 96 bit nonce, so one key should seal at most 2^32 messages through it before the key is replaced.
+`seal` takes its nonce from the caller, who must never repeat a nonce under one key. The transport derives each nonce from a per session IV and the record sequence number, so a nonce never repeats. The crate offers no random nonce helper, so no caller can exhaust the 96 bit nonce space by drawing nonces at random.
 
 ## Build and test
 

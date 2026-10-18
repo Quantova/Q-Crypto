@@ -408,18 +408,6 @@ pub fn seal(
     Some((ciphertext, tag))
 }
 
-#[cfg(feature = "os-rng")]
-pub fn seal_os(
-    key: &[u8; KEY_BYTES],
-    aad: &[u8],
-    plaintext: &[u8],
-) -> Option<([u8; NONCE_BYTES], Vec<u8>, [u8; TAG_BYTES])> {
-    let mut nonce = [0u8; NONCE_BYTES];
-    crate::rng::try_fill_random(&mut nonce).ok()?;
-    let (ciphertext, tag) = seal(key, &nonce, aad, plaintext)?;
-    Some((nonce, ciphertext, tag))
-}
-
 pub fn open(
     key: &[u8; KEY_BYTES],
     nonce: &[u8; NONCE_BYTES],
@@ -673,19 +661,4 @@ mod tests {
         assert_eq!(first.1, second.1);
     }
 
-    #[cfg(feature = "os-rng")]
-    #[test]
-    fn a_sealed_message_under_an_os_nonce_opens_and_never_repeats_the_nonce() {
-        let key = [7u8; KEY_BYTES];
-        let (n1, c1, t1) = seal_os(&key, b"aad", b"hello").expect("seal");
-        assert_eq!(
-            open(&key, &n1, b"aad", &c1, &t1).as_deref(),
-            Some(&b"hello"[..])
-        );
-        let (n2, _, _) = seal_os(&key, b"aad", b"hello").expect("seal");
-        assert_ne!(
-            n1, n2,
-            "a fresh nonce per message is the whole point of this helper"
-        );
-    }
 }

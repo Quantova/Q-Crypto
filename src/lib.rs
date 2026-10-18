@@ -30,5 +30,3 @@ pub use ml_kem::{encaps_os as ml_kem_encaps_os, keygen_os as ml_kem_keygen_os};
 #[cfg(feature = "os-rng")]
 pub use slh_dsa::{keygen_os as slh_dsa_keygen_os, sign_os as slh_dsa_sign_os};
 
-#[cfg(feature = "fn-dsa")]
-pub mod fn_dsa;
