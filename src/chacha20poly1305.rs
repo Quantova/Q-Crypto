@@ -660,5 +660,4 @@ mod tests {
         assert_eq!(first.0, second.0);
         assert_eq!(first.1, second.1);
     }
-
 }
