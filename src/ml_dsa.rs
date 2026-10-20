@@ -15,6 +15,7 @@ const BETA: i32 = 196;
 const GAMMA1: i32 = 1 << 19;
 const GAMMA2: i32 = (Q - 1) / 32;
 const OMEGA: usize = 55;
+const SIGN_ATTEMPTS: usize = 814;
 const LAMBDA: usize = 192;
 
 const CTILDE_BYTES: usize = LAMBDA / 4;
@@ -866,7 +867,7 @@ fn sign_with_mu(sk: &[u8; SECRET_KEY_BYTES], mu: &[u8], rnd: &[u8; 32]) -> Optio
     let rho_pp = Zeroizing::new(shake256_bytes(&seed, 64));
 
     let mut kappa = 0usize;
-    loop {
+    for _ in 0..SIGN_ATTEMPTS {
         let y = SecretPolys::new(expand_mask(&rho_pp, kappa));
         kappa += L;
 
@@ -955,6 +956,7 @@ fn sign_with_mu(sk: &[u8; SECRET_KEY_BYTES], mu: &[u8], rnd: &[u8; 32]) -> Optio
 
         return Some(sig_encode(&c_tilde, &z, &h));
     }
+    None
 }
 
 fn compute_mu(tr: &[u8], m_prime: &[u8]) -> Vec<u8> {
