@@ -14,7 +14,14 @@ fn volatile_zero<T: Copy + Default>(slots: &mut [T]) {
     }
 }
 
-fn wide_zero<T: Copy + Default>(slots: &mut [T]) {
+trait Plain: Copy + Default {}
+
+impl Plain for u8 {}
+impl Plain for i32 {}
+impl Plain for u32 {}
+impl Plain for u64 {}
+
+fn wide_zero<T: Plain>(slots: &mut [T]) {
     let (head, body, tail) = unsafe { slots.align_to_mut::<u128>() };
     volatile_zero(head);
     volatile_zero(body);

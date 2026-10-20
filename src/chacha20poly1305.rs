@@ -383,7 +383,7 @@ fn constant_time_eq(a: &[u8; TAG_BYTES], b: &[u8; TAG_BYTES]) -> bool {
     for (x, y) in a.iter().zip(b.iter()) {
         diff |= x ^ y;
     }
-    diff == 0
+    core::hint::black_box(diff) == 0
 }
 
 pub const MAX_AEAD_PLAINTEXT: usize = if usize::BITS >= 64 {
@@ -392,13 +392,17 @@ pub const MAX_AEAD_PLAINTEXT: usize = if usize::BITS >= 64 {
     usize::MAX
 };
 
+fn exceeds_aead_bound(len: usize) -> bool {
+    len as u64 > ((1u64 << 32) - 1) * 64
+}
+
 pub fn seal(
     key: &[u8; KEY_BYTES],
     nonce: &[u8; NONCE_BYTES],
     aad: &[u8],
     plaintext: &[u8],
 ) -> Option<(Vec<u8>, [u8; TAG_BYTES])> {
-    if plaintext.len() > MAX_AEAD_PLAINTEXT {
+    if exceeds_aead_bound(plaintext.len()) {
         return None;
     }
     let otk = Zeroizing::new(poly1305_key_gen(key, nonce));
@@ -415,7 +419,7 @@ pub fn open(
     ciphertext: &[u8],
     tag: &[u8; TAG_BYTES],
 ) -> Option<Vec<u8>> {
-    if ciphertext.len() > MAX_AEAD_PLAINTEXT {
+    if exceeds_aead_bound(ciphertext.len()) {
         return None;
     }
     let otk = Zeroizing::new(poly1305_key_gen(key, nonce));

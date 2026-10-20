@@ -5,24 +5,50 @@ use std::fs::File;
 use std::io::Read;
 
 #[cfg(target_os = "linux")]
-fn os_fill(buf: &mut [u8]) -> bool {
+fn sys_getrandom(buf: &mut [u8]) -> isize {
     extern "C" {
         fn getrandom(buf: *mut core::ffi::c_void, buflen: usize, flags: core::ffi::c_uint)
             -> isize;
     }
+    unsafe { getrandom(buf.as_mut_ptr() as *mut core::ffi::c_void, buf.len(), 0) }
+}
+
+#[cfg(target_os = "android")]
+fn sys_getrandom(buf: &mut [u8]) -> isize {
+    extern "C" {
+        fn syscall(number: core::ffi::c_long, ...) -> core::ffi::c_long;
+    }
+    #[cfg(target_arch = "aarch64")]
+    const SYS_GETRANDOM: core::ffi::c_long = 278;
+    #[cfg(target_arch = "x86_64")]
+    const SYS_GETRANDOM: core::ffi::c_long = 318;
+    #[cfg(target_arch = "arm")]
+    const SYS_GETRANDOM: core::ffi::c_long = 384;
+    #[cfg(target_arch = "x86")]
+    const SYS_GETRANDOM: core::ffi::c_long = 355;
+    unsafe {
+        syscall(
+            SYS_GETRANDOM,
+            buf.as_mut_ptr() as *mut core::ffi::c_void,
+            buf.len(),
+            0 as core::ffi::c_uint,
+        ) as isize
+    }
+}
+
+#[cfg(any(target_os = "linux", target_os = "android"))]
+fn os_fill(buf: &mut [u8]) -> bool {
     let mut filled = 0usize;
     while filled < buf.len() {
-        let n = unsafe {
-            getrandom(
-                buf[filled..].as_mut_ptr() as *mut core::ffi::c_void,
-                buf.len() - filled,
-                0,
-            )
-        };
-        if n <= 0 {
+        let n = sys_getrandom(&mut buf[filled..]);
+        if n > 0 {
+            filled += n as usize;
+        } else if n < 0 && std::io::Error::last_os_error().kind() == std::io::ErrorKind::Interrupted
+        {
+            continue;
+        } else {
             return false;
         }
-        filled += n as usize;
     }
     true
 }
@@ -81,6 +107,7 @@ fn os_fill(buf: &mut [u8]) -> bool {
 
 #[cfg(not(any(
     target_os = "linux",
+    target_os = "android",
     target_os = "macos",
     target_os = "ios",
     target_os = "freebsd",
@@ -97,6 +124,8 @@ pub fn try_fill_random(buf: &mut [u8]) -> std::io::Result<()> {
     if os_fill(buf) {
         return Ok(());
     }
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    File::open("/dev/random")?.read_exact(&mut [0u8; 1])?;
     let mut file = File::open("/dev/urandom")?;
     file.read_exact(buf)
 }
@@ -151,6 +180,7 @@ mod tests {
 
     #[cfg(any(
         target_os = "linux",
+        target_os = "android",
         target_os = "macos",
         target_os = "ios",
         target_os = "freebsd",
