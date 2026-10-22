@@ -1,6 +1,8 @@
 // Copyright 2026 Quantova Inc
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
+use crate::zeroize::Zeroize;
+
 const K: [u64; 80] = [
     0x428a2f98d728ae22,
     0x7137449123ef65cd,
@@ -159,15 +161,32 @@ fn compress(state: &mut [u64; 8], block: &[u8]) {
     state[5] = state[5].wrapping_add(f);
     state[6] = state[6].wrapping_add(g);
     state[7] = state[7].wrapping_add(h);
-    w.iter_mut().for_each(|x| *x = 0);
+    w[..].zeroize();
 }
 
-#[derive(Clone)]
 pub struct Sha512Core {
     state: [u64; 8],
     buf: [u8; BLOCK],
     used: usize,
     total: u128,
+}
+
+impl Clone for Sha512Core {
+    fn clone(&self) -> Self {
+        Sha512Core {
+            state: self.state,
+            buf: self.buf,
+            used: self.used,
+            total: self.total,
+        }
+    }
+}
+
+impl Drop for Sha512Core {
+    fn drop(&mut self) {
+        self.state[..].zeroize();
+        self.buf[..].zeroize();
+    }
 }
 
 impl Sha512Core {
@@ -196,8 +215,9 @@ impl Sha512Core {
             self.used += take;
             data = &data[take..];
             if self.used == BLOCK {
-                let block = self.buf;
+                let mut block = self.buf;
                 compress(&mut self.state, &block);
+                block[..].zeroize();
                 self.used = 0;
             }
         }
@@ -231,8 +251,7 @@ impl Sha512Core {
         for (i, v) in self.state.iter().enumerate() {
             out[i * 8..i * 8 + 8].copy_from_slice(&v.to_be_bytes());
         }
-        self.state = [0u64; 8];
-        self.buf = [0u8; BLOCK];
+        tail[..].zeroize();
         out
     }
 

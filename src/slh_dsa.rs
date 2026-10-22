@@ -163,7 +163,9 @@ fn chain(input: &[u8; N], start: u32, steps: u32, pk_seed: &[u8], adrs: &mut Adr
     let mut tmp = *input;
     for j in start..start + steps {
         adrs.set_hash(j);
-        tmp = hash_n(pk_seed, adrs, &tmp);
+        let next = hash_n(pk_seed, adrs, &tmp);
+        tmp[..].zeroize();
+        tmp = next;
     }
     tmp
 }
