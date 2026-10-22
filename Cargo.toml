@@ -14,6 +14,7 @@ rust-version = "1.75"
 default = ["os-rng"]
 os-rng = []
 acvp-internals = []
+cnsa2 = []
 
 [dependencies]
 
