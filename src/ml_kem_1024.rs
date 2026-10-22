@@ -222,8 +222,35 @@ fn byte_decode_12(data: &[u8]) -> Poly {
     p
 }
 
-fn poly12_canonical(data: &[u8]) -> bool {
-    unpack_bits(data, 12).iter().all(|&c| c < Q)
+fn poly12_canonical_mask(data: &[u8]) -> u8 {
+    let mut ok = 1i32;
+    for c in unpack_bits(data, 12).iter() {
+        ok &= ((c - Q) >> 31) & 1;
+    }
+    0u8.wrapping_sub(ok as u8)
+}
+
+fn keys_canonical_mask(polys: &[u8]) -> u8 {
+    let mut mask = 0xffu8;
+    for i in 0..K {
+        mask &= poly12_canonical_mask(&polys[i * POLY_BYTES..(i + 1) * POLY_BYTES]);
+    }
+    mask
+}
+
+pub fn check_encaps_key(ek: &EncapsKey) -> bool {
+    keys_canonical_mask(&ek[..K * POLY_BYTES]) == 0xff
+        && ek[..K * POLY_BYTES].iter().any(|&b| b != 0)
+}
+
+pub fn check_decaps_key(dk: &[u8; DECAPS_KEY_BYTES]) -> bool {
+    let dk_pke = &dk[..K * POLY_BYTES];
+    let ek_pke = &dk[K * POLY_BYTES..2 * K * POLY_BYTES + 32];
+    let h = &dk[2 * K * POLY_BYTES + 32..2 * K * POLY_BYTES + 64];
+    let keep = keys_canonical_mask(dk_pke)
+        & keys_canonical_mask(&ek_pke[..K * POLY_BYTES])
+        & ct_eq(&sha3_256(ek_pke), h);
+    core::hint::black_box(keep) == 0xff
 }
 
 const SHAKE128_RATE: usize = 168;
@@ -509,10 +536,8 @@ pub fn keygen(d: &[u8; SEED_BYTES], z: &[u8; SEED_BYTES]) -> (EncapsKey, DecapsK
 }
 
 pub fn encaps(ek: &EncapsKey, m: &[u8; SEED_BYTES]) -> Option<(SharedSecret, Ciphertext)> {
-    for i in 0..K {
-        if !poly12_canonical(&ek[i * POLY_BYTES..(i + 1) * POLY_BYTES]) {
-            return None;
-        }
+    if !check_encaps_key(ek) {
+        return None;
     }
 
     let mut g_in = Vec::with_capacity(64);
@@ -556,13 +581,8 @@ pub fn decaps(dk: &[u8; DECAPS_KEY_BYTES], c: &Ciphertext) -> SharedSecret {
 
     let mut c_prime = kpke_encrypt(ek_pke, &m_prime, r_prime);
 
-    let mut canonical = true;
-    for i in 0..K {
-        canonical = canonical
-            && poly12_canonical(&dk_pke[i * POLY_BYTES..(i + 1) * POLY_BYTES])
-            && poly12_canonical(&ek_pke[i * POLY_BYTES..(i + 1) * POLY_BYTES]);
-    }
-    let canonical_mask = if canonical { 0xffu8 } else { 0x00u8 };
+    let canonical_mask =
+        keys_canonical_mask(dk_pke) & keys_canonical_mask(&ek_pke[..K * POLY_BYTES]);
     let h_check = sha3_256(ek_pke);
     let keep = core::hint::black_box(ct_eq(&c_prime, c) & canonical_mask & ct_eq(&h_check, h));
 
