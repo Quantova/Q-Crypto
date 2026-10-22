@@ -967,8 +967,12 @@ fn compute_mu(tr: &[u8], m_prime: &[u8]) -> Vec<u8> {
 }
 
 #[cfg(any(test, feature = "acvp-internals"))]
-pub fn sign_internal(sk: &[u8; SECRET_KEY_BYTES], m_prime: &[u8], rnd: &[u8; 32]) -> Signature {
-    sign_internal_impl(sk, m_prime, rnd).expect("a key produced by keygen decodes")
+pub fn sign_internal(
+    sk: &[u8; SECRET_KEY_BYTES],
+    m_prime: &[u8],
+    rnd: &[u8; 32],
+) -> Option<Signature> {
+    sign_internal_impl(sk, m_prime, rnd)
 }
 
 #[cfg(any(test, feature = "acvp-internals"))]
@@ -1456,7 +1460,7 @@ mod tests {
             let rnd = seed32(&hex(&r[1]));
             let sk = SecretKey::from_bytes(&as_array::<SECRET_KEY_BYTES>(&hex(&r[2])));
             let want_sig = hex(&r[3]);
-            let sig = sign_internal(&sk, &message, &rnd);
+            let sig = sign_internal(&sk, &message, &rnd).expect("an acvp key decodes");
             assert_eq!(&sig[..], &want_sig[..], "signature mismatch");
         }
     }
@@ -1522,8 +1526,8 @@ mod tests {
         let (_, sk) = keygen(&seed);
         let message = b"quantova determinism";
         let rnd = [4u8; 32];
-        let first = sign_internal(&sk, message, &rnd);
-        let second = sign_internal(&sk, message, &rnd);
+        let first = sign_internal(&sk, message, &rnd).expect("an acvp key decodes");
+        let second = sign_internal(&sk, message, &rnd).expect("an acvp key decodes");
         assert_eq!(&first[..], &second[..]);
     }
 
