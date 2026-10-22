@@ -3,7 +3,7 @@
 
 [package]
 name = "qtv-crypto"
-version = "0.3.0"
+version = "0.6.0"
 edition = "2021"
 license = "Apache-2.0 OR MIT"
 description = "The post quantum cryptography crate for the Quantova stack, with ML-KEM-768 and ML-KEM-1024, ML-DSA-65 and ML-DSA-87, SLH-DSA, SHA-3 and SHAKE, SHA-384 and SHA-512, written from scratch to the FIPS specifications and validated against NIST test vectors. Not independently audited."

@@ -39,11 +39,11 @@ The signature and KEM schemes are checked end to end against the official NIST v
 
 ## Where it sits in the stack
 
-Every other repository depends on this crate, pinned by git tag rather than a registry version. The QVM verify and hash and KEM opcodes call these primitives directly. Quantova-Chain signs accounts and transactions with ML-DSA and runs its transport handshake on ML-KEM. QORUS aggregates validator attestations over ML-DSA and derives its committee sortition and randomness beacon from SHA-3 and SHAKE. The address format commits to an ML-DSA public key, never to a truncated hash of an elliptic curve key.
+Every other repository depends on this crate, pinned by commit rather than a registry version. The QVM verify and hash and KEM opcodes call these primitives directly. Quantova-Chain signs accounts and transactions with ML-DSA and runs its transport handshake on ML-KEM. QORUS aggregates validator attestations over ML-DSA and derives its committee sortition and randomness beacon from SHA-3 and SHAKE. The address format commits to an ML-DSA public key, never to a truncated hash of an elliptic curve key.
 
 ## Status
 
-Every consumer pins a reviewed commit, currently 12fefda, through its Cargo.lock and its cross repo pins. The crate is a reference implementation validated against NIST test vectors and has had no independent third party review.
+Every consumer pins a reviewed commit through its Cargo.lock and its cross repo pins. The crate is a reference implementation validated against NIST test vectors and has had no independent third party review.
 
 ## License
 
