@@ -1072,7 +1072,25 @@ fn verify_with_mu(pk: &PublicKey, mu: &[u8], sig: &Signature) -> bool {
 }
 
 pub fn public_key_is_degenerate(pk: &PublicKey) -> bool {
-    pk[32..].iter().all(|&b| b == 0)
+    pk[32..].iter().all(|&b| b == 0) || pk_decode(pk).1.iter().any(t1_row_is_weak)
+}
+
+fn t1_row_is_weak(row: &Poly) -> bool {
+    let q = i64::from(Q);
+    let mut magnitudes: Vec<i64> = row
+        .iter()
+        .map(|&c| {
+            let v = (i64::from(c) << D) % q;
+            if v > q / 2 {
+                q - v
+            } else {
+                v
+            }
+        })
+        .collect();
+    magnitudes.select_nth_unstable_by(TAU - 1, |a, b| b.cmp(a));
+    let largest: i64 = magnitudes[..TAU].iter().sum();
+    largest < 64 * i64::from(GAMMA2)
 }
 
 fn format_message(context: &[u8], message: &[u8]) -> Option<Vec<u8>> {
