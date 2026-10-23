@@ -7,6 +7,7 @@
 #![allow(clippy::manual_memcpy)]
 #![allow(clippy::assign_op_pattern)]
 
+pub mod aes256gcm;
 pub mod chacha20poly1305;
 #[cfg(not(feature = "cnsa2"))]
 pub mod ml_dsa;
@@ -36,7 +37,15 @@ pub mod ml_kem {
 }
 
 #[cfg(feature = "cnsa2")]
-pub const PROFILE: &str = "CNSA 2.0, ML-DSA-87 and ML-KEM-1024";
+pub const PROFILE: &str = "CNSA 2.0, ML-DSA-87, ML-KEM-1024 and AES-256-GCM";
+#[cfg(feature = "cnsa2")]
+pub mod aead {
+    pub use crate::aes256gcm::*;
+}
+#[cfg(not(feature = "cnsa2"))]
+pub mod aead {
+    pub use crate::chacha20poly1305::*;
+}
 #[cfg(not(feature = "cnsa2"))]
 pub const PROFILE: &str = "category 3, ML-DSA-65 and ML-KEM-768";
 
