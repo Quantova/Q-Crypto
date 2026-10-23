@@ -549,6 +549,19 @@ mod tests {
         assert_eq!(tag[..], hex("a8061dc1305136c6c22b8baf0c0127a9")[..]);
     }
 
+    #[test]
+    fn poly1305_final_reduction_vectors() {
+        let text = include_str!("../vectors/poly1305/reduction.txt");
+        let mut count = 0;
+        for line in text.lines() {
+            let fields: Vec<&str> = line.split_whitespace().collect();
+            let key: [u8; 32] = hex(fields[0]).try_into().unwrap();
+            assert_eq!(poly1305(&key, &hex(fields[1]))[..], hex(fields[2])[..]);
+            count += 1;
+        }
+        assert_eq!(count, 207);
+    }
+
     fn high_key() -> [u8; KEY_BYTES] {
         let mut key = [0u8; KEY_BYTES];
         for (i, b) in key.iter_mut().enumerate() {
