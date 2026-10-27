@@ -222,12 +222,19 @@ fn byte_decode_12(data: &[u8]) -> Poly {
     p
 }
 
-fn poly12_canonical_mask(data: &[u8]) -> u8 {
+fn decode_poly12_masking(decoded: &mut Poly, data: &[u8]) -> u8 {
+    *decoded = unpack_bits(data, 12);
     let mut ok = 1i32;
-    for c in unpack_bits(data, 12).iter() {
+    for c in decoded.iter() {
         ok &= ((c - Q) >> 31) & 1;
     }
+    decoded[..].zeroize();
     0u8.wrapping_sub(ok as u8)
+}
+
+fn poly12_canonical_mask(data: &[u8]) -> u8 {
+    let mut decoded = ZERO_POLY;
+    decode_poly12_masking(&mut decoded, data)
 }
 
 fn keys_canonical_mask(polys: &[u8]) -> u8 {
@@ -627,6 +634,13 @@ mod tests {
     use std::fs;
     use std::path::PathBuf;
 
+    #[test]
+    fn the_canonical_mask_wipes_its_decoded_polynomial() {
+        let data = [0xffu8; POLY_BYTES];
+        let mut decoded = ZERO_POLY;
+        let _ = decode_poly12_masking(&mut decoded, &data);
+        assert!(decoded.iter().all(|&c| c == 0));
+    }
     fn hex(s: &str) -> Vec<u8> {
         assert!(s.len() % 2 == 0);
         (0..s.len() / 2)
