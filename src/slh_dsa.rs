@@ -774,5 +774,20 @@ mod tests {
                 assert_ne!(tags[i], tags[j], "address type tags must be distinct");
             }
         }
+        for &tag in tags.iter() {
+            let mut adrs = Adrs::new();
+            adrs.set_key_pair(0x0a0b0c0d);
+            adrs.set_type_and_clear(tag);
+            let field = u32::from_be_bytes(adrs.0[16..20].try_into().unwrap());
+            assert_eq!(
+                field, tag,
+                "the address type field must read back the tag that was set"
+            );
+            assert_eq!(
+                adrs.key_pair(),
+                0,
+                "set_type_and_clear must clear the trailing address words"
+            );
+        }
     }
 }

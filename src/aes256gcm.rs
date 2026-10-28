@@ -191,8 +191,10 @@ fn tag_for(
 ) -> [u8; TAG_BYTES] {
     let mut h_block = Zeroizing::new([0u8; BLOCK]);
     schedule.encrypt(&mut h_block);
-    let h = u128::from_be_bytes(*h_block);
+    let mut h = u128::from_be_bytes(*h_block);
     let s = ghash(h, aad, ciphertext);
+    h = 0;
+    core::hint::black_box(h);
     let mut j0 = Zeroizing::new(counter_block(nonce, 1));
     schedule.encrypt(&mut j0);
     (u128::from_be_bytes(*j0) ^ s).to_be_bytes()
