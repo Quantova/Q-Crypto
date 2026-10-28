@@ -87,6 +87,13 @@ fn inf_norm(p: &Poly) -> i32 {
     max
 }
 
+fn max_abs(max: i32, x: i32) -> i32 {
+    let sign = x >> 31;
+    let v = (x ^ sign) - sign;
+    let take = (max - v) >> 31;
+    (v & take) | (max & !take)
+}
+
 const fn brv8(mut i: usize) -> u32 {
     let mut r = 0u32;
     let mut b = 0;
@@ -427,6 +434,17 @@ fn sample_in_ball(c_tilde: &[u8]) -> Poly {
         }
         buflen *= 2;
     }
+}
+
+fn sample_in_ball_verify(c_tilde: &[u8]) -> Option<Poly> {
+    let mut buflen = SHAKE256_RATE * 2;
+    for _ in 0..8 {
+        if let Some(c) = sample_in_ball_with(c_tilde, buflen) {
+            return Some(c);
+        }
+        buflen *= 2;
+    }
+    None
 }
 
 fn pk_encode(rho: &[u8], t1: &[Poly]) -> PublicKey {
@@ -823,7 +841,7 @@ fn sign_with_mu(sk: &[u8; SECRET_KEY_BYTES], mu: &[u8], rnd: &[u8; 32]) -> Optio
             cs2[i] = acc;
             for n in 0..N {
                 let r0 = low_bits(sub_q(w[i][n], cs2[i][n]));
-                r0_norm = r0_norm.max(r0.abs());
+                r0_norm = max_abs(r0_norm, r0);
             }
             acc[..].zeroize();
         }
@@ -839,7 +857,7 @@ fn sign_with_mu(sk: &[u8; SECRET_KEY_BYTES], mu: &[u8], rnd: &[u8; 32]) -> Optio
             pointwise_acc(&mut ct0, &c_hat, &t0_hat[i]);
             inv_ntt(&mut ct0);
             for n in 0..N {
-                ct0_norm = ct0_norm.max(center(ct0[n]).abs());
+                ct0_norm = max_abs(ct0_norm, center(ct0[n]));
                 let neg_ct0 = sub_q(0, ct0[n]);
                 let r = add_q(sub_q(w[i][n], cs2[i][n]), ct0[n]);
                 h[i][n] = make_hint(neg_ct0, r) as i32;
@@ -911,7 +929,10 @@ fn verify_with_mu(pk: &PublicKey, mu: &[u8], sig: &Signature) -> bool {
     }
 
     let a = expand_a(&rho);
-    let c = sample_in_ball(&decoded.c_tilde);
+    let c = match sample_in_ball_verify(&decoded.c_tilde) {
+        Some(c) => c,
+        None => return false,
+    };
     let mut c_hat = c;
     for coeff in c_hat.iter_mut() {
         *coeff = to_pos(*coeff);
