@@ -1160,6 +1160,9 @@ pub fn verify_strict(
 }
 
 pub fn verify(pk: &PublicKey, message: &[u8], signature: &Signature, context: &[u8]) -> bool {
+    if public_key_is_degenerate(pk) {
+        return false;
+    }
     let m_prime = match format_message(context, message) {
         Some(m) => m,
         None => return false,
