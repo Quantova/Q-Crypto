@@ -972,6 +972,9 @@ fn verify_with_mu(pk: &PublicKey, mu: &[u8], sig: &Signature) -> bool {
         }
     }
 
+    if w1.iter().all(|poly| poly.iter().all(|&coeff| coeff == 0)) {
+        return false;
+    }
     let mut ch_in = Vec::with_capacity(mu.len() + K * POLYW1_PACKED);
     ch_in.extend_from_slice(mu);
     ch_in.extend_from_slice(&w1_encode(&w1));
